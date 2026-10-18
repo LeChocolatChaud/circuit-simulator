@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useMemo,
   useEffect,
   useRef,
   useState,
@@ -17,8 +18,8 @@ import {
 } from 'lucide-react';
 import {
   componentInfo,
-  terminalCurrent,
   terminalPosition,
+  terminalPort,
   type CircuitDocument,
   type Point,
   type Sample,
@@ -26,6 +27,13 @@ import {
 } from '../model/types';
 import { Symbol } from './Symbol';
 import { format } from '../model/format';
+import {
+  attachedNodes,
+  pathCenter,
+  pathData,
+  terminalNormal,
+  wireRoutes,
+} from './routing';
 
 export type Tool = 'select' | 'wire' | 'node' | 'pan';
 interface Props {
@@ -39,22 +47,10 @@ interface Props {
   stale: boolean;
   disabled: boolean;
   inspector: ReactNode;
+  onArrange: () => void;
 }
 const route = (from: Point, to: Point) =>
   `M${from.x},${from.y} H${(from.x + to.x) / 2} V${to.y} H${to.x}`;
-const currentArrow = (
-  from: Point,
-  to: Point,
-  current: number | null | undefined,
-) => {
-  const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
-  const direction =
-    ((current ?? 0) < 0 ? -1 : 1) *
-    (Math.sign(from.y === to.y ? to.x - from.x : to.y - from.y) || 1);
-  return from.y === to.y
-    ? `M${mid.x - 16 * direction},${mid.y - 17}h${32 * direction}`
-    : `M${mid.x + 17},${mid.y - 16 * direction}v${32 * direction}`;
-};
 export function Canvas({
   doc,
   selection,
@@ -66,6 +62,7 @@ export function Canvas({
   stale,
   disabled,
   inspector,
+  onArrange,
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 800, height: 500 });
@@ -82,6 +79,19 @@ export function Canvas({
     null,
   );
   const [cursor, setCursor] = useState<Point | null>(null);
+  const [contextPoint, setContextPoint] = useState<Point | null>(null);
+  const [contextMenu, setContextMenu] = useState(false);
+  useEffect(() => {
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setContextMenu(false);
+        setContextPoint(null);
+        setWireStart(null);
+      }
+    };
+    window.addEventListener('keydown', dismiss);
+    return () => window.removeEventListener('keydown', dismiss);
+  }, []);
   const name = useRef('');
   const lastSize = useRef({ width: 0, height: 0 });
   useEffect(() => {
@@ -137,18 +147,31 @@ export function Canvas({
     x: (point.x - view.x) / view.scale,
     y: (point.y - view.y) / view.scale,
   });
-  const moved = (kind: 'node' | 'component', id: string, point: Point) =>
-    drag?.selection.kind === kind && drag.selection.id === id
-      ? drag.current
-      : point;
-  const nodes = doc.nodes.map((n) => ({
-    ...n,
-    position: moved('node', n.id, n.position),
-  }));
-  const components = doc.components.map((c) => ({
-    ...c,
-    position: moved('component', c.id, c.position),
-  }));
+  const geometry = useMemo(() => {
+    const moved = (kind: 'node' | 'component', id: string, point: Point) =>
+      drag?.selection.kind === kind && drag.selection.id === id
+        ? drag.current
+        : point;
+    const components = doc.components.map((c) => ({
+      ...c,
+      position: moved('component', c.id, c.position),
+    }));
+    const nodes = attachedNodes(
+      doc.nodes.map((n) => ({
+        ...n,
+        position: moved('node', n.id, n.position),
+      })),
+      components,
+    );
+    const routes = wireRoutes(nodes, components, doc.wires);
+    return { components, nodes, routes };
+  }, [doc, drag]);
+  const { components, nodes, routes } = geometry;
+  const select = (next: Selection) => {
+    setContextPoint(null);
+    setContextMenu(false);
+    onSelect(next);
+  };
   const getNode = (id: string) => nodes.find((n) => n.id === id)!.position;
   const selected = (kind: string, id: string) =>
     selection?.kind === kind && selection.id === id;
@@ -164,9 +187,9 @@ export function Canvas({
     item: NonNullable<Selection>,
     origin: Point,
   ) => {
+    if (event.button !== 0 || tool === 'pan') return;
     event.stopPropagation();
-    if (tool === 'pan') return;
-    onSelect(item);
+    select(item);
     if (disabled || tool !== 'select') return;
     container.current?.setPointerCapture(event.pointerId);
     setDrag({
@@ -193,15 +216,13 @@ export function Canvas({
     anchor = nodes.find((n) => n.id === selection.id)?.position;
   if (selection?.kind === 'component')
     anchor = components.find((c) => c.id === selection.id)?.position;
-  if (selection?.kind === 'wire') {
+  if (selection?.kind === 'wire' || selection?.kind === 'lead') {
     const w = doc.wires.find((w) => w.id === selection.id);
     if (w) {
-      const a = getNode(w.from);
-      const b = getNode(w.to);
-      anchor = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      anchor = pathCenter(routes.get(w.id)!).point;
     }
   }
-  if (selection?.kind === 'lead') {
+  if (selection?.kind === 'lead' && !anchor) {
     const [id, port] = selection.id.split('.');
     const c = components.find((c) => c.id === id);
     if (c) {
@@ -213,13 +234,19 @@ export function Canvas({
   const popupLeft = anchor
     ? Math.max(
         12,
-        Math.min(size.width - 286, anchor.x * view.scale + view.x + 52),
+        Math.min(
+          size.width - Math.min(332, size.width - 24),
+          contextPoint?.x ?? anchor.x * view.scale + view.x + 45,
+        ),
       )
     : 0;
   const popupTop = anchor
     ? Math.max(
         12,
-        Math.min(size.height - 340, anchor.y * view.scale + view.y - 30),
+        Math.min(
+          size.height - 450,
+          contextPoint?.y ?? anchor.y * view.scale + view.y - 30,
+        ),
       )
     : 0;
   return (
@@ -282,7 +309,35 @@ export function Canvas({
       <div
         className={`canvas tool-${tool}`}
         ref={container}
+        onContextMenu={(event) => {
+          if ((event.target as Element).closest('.inspector-anchor')) return;
+          event.preventDefault();
+          setDrag(null);
+          setPan(null);
+          const target = (event.target as Element).closest(
+            '[data-kind][data-id]',
+          );
+          if (target) {
+            onSelect({
+              kind: target.getAttribute(
+                'data-kind',
+              ) as NonNullable<Selection>['kind'],
+              id: target.getAttribute('data-id')!,
+            });
+            setContextMenu(false);
+          } else {
+            onSelect(null);
+            setContextMenu(true);
+          }
+          setContextPoint(screen(event));
+        }}
         onWheel={(event) => {
+          if (
+            (event.target as Element).closest(
+              '.inspector-anchor, .canvas-context-menu',
+            )
+          )
+            return;
           zoom(event.deltaY < 0 ? 1.08 : 0.925, screen(event));
         }}
         onPointerMove={(event) => {
@@ -329,6 +384,7 @@ export function Canvas({
           width={size.width}
           height={size.height}
           onPointerDown={(event) => {
+            if (event.button === 2) return;
             if (event.button === 1 || tool === 'pan') {
               event.preventDefault();
               const start = screen(event);
@@ -341,7 +397,7 @@ export function Canvas({
                 y: Math.round(p.y / 10) * 10,
               });
             } else {
-              onSelect(null);
+              select(null);
               setWireStart(null);
             }
           }}
@@ -355,7 +411,13 @@ export function Canvas({
               x={view.x}
               y={view.y}
             >
-              <circle cx="1" cy="1" r="0.8" fill="#b8c7c0" opacity="0.55" />
+              <circle
+                cx="1"
+                cy="1"
+                r="0.8"
+                className="grid-dot"
+                opacity="0.55"
+              />
             </pattern>
             <marker
               id="current-arrow"
@@ -372,97 +434,68 @@ export function Canvas({
           <rect width="100%" height="100%" fill="url(#grid)" />
           <g transform={`translate(${view.x} ${view.y}) scale(${view.scale})`}>
             {doc.wires.map((w) => {
-              const a = getNode(w.from);
-              const b = getNode(w.to);
-              const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+              const path = routes.get(w.id)!;
+              const { point: mid, horizontal, direction } = pathCenter(path);
+              const kind = w.implicit ? 'lead' : 'wire';
+              const isSelected = selected(kind, w.id);
+              const current = sample?.wireCurrents[w.id];
+              const sign = direction * ((current ?? 0) < 0 ? -1 : 1);
               return (
                 <g
                   key={w.id}
-                  className={`circuit-wire ${selected('wire', w.id) ? 'selected' : ''}`}
+                  data-kind={kind}
+                  data-id={w.id}
+                  className={`circuit-wire ${isSelected ? 'selected' : ''}`}
                   role="button"
-                  aria-label={`Wire ${w.id}`}
+                  aria-label={
+                    w.implicit ? `Inspect branch ${w.id}` : `Wire ${w.id}`
+                  }
                   tabIndex={0}
                   onClick={(e) => {
                     e.stopPropagation();
-                    onSelect({ kind: 'wire', id: w.id });
+                    select({ kind, id: w.id });
                   }}
-                  onPointerDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => {
+                    if (tool !== 'pan') e.stopPropagation();
+                  }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') onSelect({ kind: 'wire', id: w.id });
+                    if (e.key === 'Enter') select({ kind, id: w.id });
                   }}
                 >
-                  <path className="wire-hit" d={route(a, b)} />
+                  <path className="wire-hit" d={pathData(path)} />
                   <rect
-                    x={mid.x - 9}
-                    y={mid.y - 9}
-                    width="18"
-                    height="18"
+                    className="wire-pick-target"
+                    x={mid.x - 8}
+                    y={mid.y - 8}
+                    width="16"
+                    height="16"
                     fill="transparent"
                   />
-                  <path className="wire-visible" d={route(a, b)} />
-                  {w.label !== w.id && (
+                  <path className="wire-visible" d={pathData(path)} />
+                  {w.label && w.label !== w.id && (
                     <text className="wire-label" x={mid.x + 12} y={mid.y - 12}>
                       {w.label}
                     </text>
                   )}
-                  {selected('wire', w.id) && (
+                  {isSelected && (
                     <path
                       className="wire-current-arrow"
-                      d={currentArrow(a, b, sample?.wireCurrents[w.id])}
+                      d={
+                        horizontal
+                          ? `M${mid.x - 16 * sign},${mid.y - 16}h${32 * sign}`
+                          : `M${mid.x + 16},${mid.y - 16 * sign}v${32 * sign}`
+                      }
                       markerEnd="url(#current-arrow)"
                     />
                   )}
                 </g>
               );
             })}
-            {components.flatMap((c) =>
-              c.nodes.map((node, port) => {
-                const id = `${c.id}.${port}`;
-                return (
-                  <g
-                    key={id}
-                    className={`circuit-wire ${selected('lead', id) ? 'selected' : ''}`}
-                    role="button"
-                    aria-label={`Inspect branch ${id}`}
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') onSelect({ kind: 'lead', id });
-                    }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (tool === 'wire') connect(node);
-                      else onSelect({ kind: 'lead', id });
-                    }}
-                  >
-                    <path
-                      className="wire-hit"
-                      d={route(getNode(node), terminalPosition(c, port))}
-                    />
-                    <path
-                      className="wire-visible"
-                      d={route(getNode(node), terminalPosition(c, port))}
-                    />
-                    {selected('lead', id) && (
-                      <path
-                        className="wire-current-arrow"
-                        d={currentArrow(
-                          getNode(node),
-                          terminalPosition(c, port),
-                          sample
-                            ? terminalCurrent(c, port, sample.currents[c.id])
-                            : undefined,
-                        )}
-                        markerEnd="url(#current-arrow)"
-                      />
-                    )}
-                  </g>
-                );
-              }),
-            )}
             {components.map((c) => (
               <g
                 key={c.id}
+                data-kind="component"
+                data-id={c.id}
                 className={`component ${selected('component', c.id) ? 'selected' : ''}`}
                 transform={`translate(${c.position.x} ${c.position.y})`}
                 role="button"
@@ -470,7 +503,7 @@ export function Canvas({
                 aria-label={`Inspect ${c.id}`}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter')
-                    onSelect({ kind: 'component', id: c.id });
+                    select({ kind: 'component', id: c.id });
                 }}
                 onPointerDown={(event) =>
                   startDrag(event, { kind: 'component', id: c.id }, c.position)
@@ -528,53 +561,56 @@ export function Canvas({
                     />
                   </g>
                 )}
-                {tool === 'wire' &&
-                  c.nodes.map((node, port) => {
-                    const p = terminalPosition(
-                      { ...c, position: { x: 0, y: 0 } },
-                      port,
-                    );
-                    return (
-                      <circle
-                        key={port}
-                        className="terminal-handle"
-                        cx={p.x}
-                        cy={p.y}
-                        r="7"
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          connect(node);
-                        }}
-                      />
-                    );
-                  })}
               </g>
             ))}
             {nodes.map((n) => (
               <g
                 key={n.id}
-                className={`circuit-node ${selected('node', n.id) || wireStart === n.id ? 'selected' : ''}`}
+                data-kind="node"
+                data-id={n.id}
+                className={`circuit-node ${n.terminal ? 'terminal-node' : ''} ${selected('node', n.id) || wireStart === n.id ? 'selected' : ''}`}
                 transform={`translate(${n.position.x} ${n.position.y})`}
                 role="button"
                 aria-label={`Inspect node ${n.id}`}
                 tabIndex={0}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') onSelect({ kind: 'node', id: n.id });
+                  if (e.key === 'Enter') select({ kind: 'node', id: n.id });
                 }}
                 onPointerDown={(event) => {
+                  if (event.button !== 0 || tool === 'pan') return;
                   if (tool === 'wire') {
                     event.stopPropagation();
                     connect(n.id);
+                  } else if (n.terminal) {
+                    event.stopPropagation();
+                    select({ kind: 'node', id: n.id });
                   } else
                     startDrag(event, { kind: 'node', id: n.id }, n.position);
                 }}
               >
                 <circle className="node-hit" r="14" />
                 <circle className="node-dot" r="4" />
-                <text y="-17" textAnchor="middle" className="node-label">
-                  {n.label}
-                </text>
+                <title>{n.id}</title>
+                {(() => {
+                  const c = n.terminal
+                    ? components.find((c) => c.id === n.terminal!.component)
+                    : undefined;
+                  const normal = c
+                    ? terminalNormal(c, n.terminal!.port)
+                    : { x: 0, y: -1 };
+                  return (
+                    <text
+                      x={normal.x * 12}
+                      y={normal.y > 0 ? 19 : normal.y < 0 ? -13 : -8}
+                      textAnchor={
+                        normal.x < 0 ? 'end' : normal.x > 0 ? 'start' : 'middle'
+                      }
+                      className={`node-label ${n.terminal ? 'terminal-label' : ''}`}
+                    >
+                      {n.label}
+                    </text>
+                  );
+                })()}
                 {doc.reference === n.id && (
                   <g className="ground" transform="translate(0,6)">
                     <path d="M0 0V12M-12 12H12M-8 17H8M-3 22H3" />
@@ -605,14 +641,14 @@ export function Canvas({
                   ? sample?.voltages[a.target]
                   : (sample?.currents[a.target] ??
                     sample?.wireCurrents[a.target]);
-              if (port !== undefined && c) {
+              if (a.quantity === 'current' && port !== undefined && c) {
                 const current = sample?.currents[c.id];
                 value =
-                  c.kind === 'opamp' && Number(port) < 2
+                  c.kind === 'opamp' && terminalPort(c, port) < 2
                     ? 0
                     : current === undefined || current === null
                       ? current
-                      : current * (Number(port) % 2 ? -1 : 1);
+                      : current * (terminalPort(c, port) % 2 ? -1 : 1);
               }
               return (
                 <g
@@ -653,11 +689,61 @@ export function Canvas({
         {anchor && !drag && !pan && (
           <div
             className="inspector-anchor"
-            style={{ left: popupLeft, top: popupTop }}
+            style={
+              {
+                left: popupLeft,
+                top: popupTop,
+                '--popup-max-height': `${Math.max(100, size.height - popupTop - 12)}px`,
+              } as React.CSSProperties
+            }
             onPointerDown={(e) => e.stopPropagation()}
             onWheel={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.stopPropagation()}
           >
             {inspector}
+          </div>
+        )}
+        {contextMenu && contextPoint && (
+          <div
+            className="canvas-context-menu"
+            role="menu"
+            aria-label="Canvas actions"
+            style={{
+              left: Math.max(8, Math.min(size.width - 190, contextPoint.x)),
+              top: Math.max(8, Math.min(size.height - 140, contextPoint.y)),
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <button
+              role="menuitem"
+              disabled={disabled}
+              onClick={() => {
+                onNode(world(contextPoint));
+                setContextMenu(false);
+              }}
+            >
+              Add node here
+            </button>
+            <button
+              role="menuitem"
+              onClick={() => {
+                fit();
+                setContextMenu(false);
+              }}
+            >
+              Fit circuit
+            </button>
+            <button
+              role="menuitem"
+              disabled={disabled}
+              onClick={() => {
+                onArrange();
+                setContextMenu(false);
+              }}
+            >
+              Arrange circuit
+            </button>
           </div>
         )}
         <div className="canvas-legend">

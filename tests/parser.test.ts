@@ -89,15 +89,18 @@ describe('circuit language', () => {
   });
   it('deletes attached objects and dangling annotations when removing a node', () => {
     const doc = parse(examples.divider).document!;
-    const next = deleteSelection(doc, { kind: 'node', id: 'supply' });
+    const next = deleteSelection(doc, { kind: 'node', id: 'V1.P' });
     expect(parse(next).document).toBeDefined();
-    expect(parse(next).document?.components.map((c) => c.id)).toEqual(['R2']);
+    expect(parse(next).document?.components.map((c) => c.id)).toEqual([
+      'R1',
+      'R2',
+    ]);
   });
   it('updates reference declarations and validates versioned project files', () => {
     expect(
-      parse(declaration(examples.divider, 'reference', 'reference supply'))
+      parse(declaration(examples.divider, 'reference', 'reference V1.P'))
         .document?.reference,
-    ).toBe('supply');
+    ).toBe('V1.P');
     expect(decodeProject(JSON.stringify(project(examples.rc)))).toBe(
       examples.rc,
     );

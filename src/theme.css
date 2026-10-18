@@ -1,0 +1,72 @@
+/* Light colors live beside their rules as fallbacks; dark colors share these tokens. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --theme-page: #0f181b;
+  --theme-sidebar: #142024;
+  --theme-code: #111d21;
+  --theme-surface: #19262a;
+  --theme-raised: #213136;
+  --theme-border: #34474a;
+  --theme-subtle: #758e87;
+  --theme-muted: #9bb1a7;
+  --theme-secondary: #b9ccbf;
+  --theme-text: #d9e8df;
+  --theme-deep: #1f503f;
+  --theme-accent: #7dd3ac;
+  --theme-accent-strong: #79c49f;
+  --theme-accent-hover: #96d9b7;
+  --theme-warning-text: #e4c17b;
+  --theme-warning-surface: #392f20;
+  --theme-danger-text: #f0ab97;
+  --theme-danger-surface: #3a2525;
+}
+[data-theme='dark'] .run-button,
+[data-theme='dark'] .toast {
+  color: #10251c;
+}
+[data-theme='dark'] .run-button kbd,
+[data-theme='dark'] .toast button {
+  color: #254a38;
+}
+[data-theme='dark'] .brand-mark {
+  background: #275941;
+  color: #c3e6b6;
+}
+[data-theme='dark'] .plot-line {
+  stroke: #88d4ab;
+}
+[data-theme='dark'] .symbol-fill {
+  fill: #19262a;
+}
+[data-theme='dark'] .metric strong,
+[data-theme='dark'] .dc-value strong,
+[data-theme='dark'] .measurement-tag tspan {
+  color: #9bdfb5;
+  fill: #9bdfb5;
+}
+[data-theme='dark'] .component.selected .component-hit {
+  fill: #6bbb8e22;
+}
+[data-theme='dark'] .component:hover .component-hit {
+  fill: #6bbb8e14;
+}
+[data-theme='dark'] .measurement-tag text {
+  stroke: #19262a;
+}
+.workspace-expanded .text-panel {
+  display: none;
+}
+@media (max-width: 740px) {
+  .workspace-card-heading {
+    flex-wrap: wrap;
+  }
+  .design-actions {
+    flex: 1;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+  .top-rotate {
+    font-size: 9px;
+  }
+}

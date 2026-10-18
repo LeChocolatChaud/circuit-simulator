@@ -1,5 +1,9 @@
 import {
   componentInfo,
+  terminalId,
+  terminalPort,
+  terminalPosition,
+  terminalSuffixes,
   type AnalysisSettings,
   type CircuitDocument,
   type Component,
@@ -10,6 +14,7 @@ import {
 } from '../model/types';
 
 const identifier = '[A-Za-z_][A-Za-z0-9_]*';
+const nodeIdentifier = `${identifier}(?:\\.${identifier})?`;
 const quote = '"(?:\\\\.|[^"\\\\])*"';
 const prefixes: Record<string, number> = {
   p: 1e-12,
@@ -160,7 +165,7 @@ export function parse(source: string): ParseResult {
         doc.name = JSON.parse(match[1]);
         hasCircuit = true;
       } else if (
-        (match = new RegExp(`^node\\s+(${identifier})(.*)$`).exec(text))
+        (match = new RegExp(`^node\\s+(${nodeIdentifier})(.*)$`).exec(text))
       ) {
         unique(match[1]);
         const p = parameters(match[2]);
@@ -177,7 +182,7 @@ export function parse(source: string): ParseResult {
         });
       } else if (
         (match = new RegExp(
-          `^wire\\s+(${identifier})\\s+(${identifier})\\s+(${identifier})(.*)$`,
+          `^wire\\s+(${identifier})\\s+(${nodeIdentifier})\\s+(${nodeIdentifier})(.*)$`,
         ).exec(text))
       ) {
         unique(match[1]);
@@ -191,7 +196,7 @@ export function parse(source: string): ParseResult {
           line,
         });
       } else if (
-        (match = new RegExp(`^reference\\s+(${identifier})$`).exec(text))
+        (match = new RegExp(`^reference\\s+(${nodeIdentifier})$`).exec(text))
       ) {
         if (hasReference)
           throw new Error('Only one reference declaration is allowed.');
@@ -199,7 +204,7 @@ export function parse(source: string): ParseResult {
         hasReference = true;
       } else if (
         (match = new RegExp(
-          `^label\\s+(voltage|current)\\((${identifier}(?:\\.[0-3])?)\\)\\s+(${quote})$`,
+          `^label\\s+(voltage|current)\\((${identifier}(?:\\.(?:${identifier}|[0-3]))?)\\)\\s+(${quote})$`,
         ).exec(text))
       ) {
         if (
@@ -241,15 +246,18 @@ export function parse(source: string): ParseResult {
           );
       } else if (
         (match = new RegExp(
-          `^(${Object.keys(componentInfo).join('|')})\\s+(${identifier})\\s*\\(([^)]*)\\)(.*)$`,
+          `^(${Object.keys(componentInfo).join('|')})\\s+(${identifier})(?:\\s*\\(([^)]*)\\))?(.*)$`,
         ).exec(text))
       ) {
         const kind = match[1] as ComponentKind;
-        const nodes = match[3].split(',').map((n) => n.trim());
+        const nodes =
+          match[3] !== undefined
+            ? match[3].split(',').map((n) => n.trim())
+            : terminalSuffixes(kind).map((suffix) => `${match![2]}.${suffix}`);
         const required = kind === 'opamp' ? 4 : 2;
         if (
           nodes.length !== required ||
-          nodes.some((n) => !new RegExp(`^${identifier}$`).test(n))
+          nodes.some((n) => !new RegExp(`^${nodeIdentifier}$`).test(n))
         )
           throw new Error(
             `${kind} requires ${required} named terminals${kind === 'opamp' ? ' (in_plus, in_minus, output, return)' : ' (positive, negative)'}.`,
@@ -293,6 +301,7 @@ export function parse(source: string): ParseResult {
           id: match[2],
           kind,
           nodes,
+          bindings: [...nodes],
           value,
           label: label(p, match[2]),
           line,
@@ -331,7 +340,7 @@ export function parse(source: string): ParseResult {
           );
         if (kind === 'vcvs' || kind === 'vccs') {
           const control = new RegExp(
-            `^\\(\\s*(${identifier}),\\s*(${identifier})\\s*\\)$`,
+            `^\\(\\s*(${nodeIdentifier}),\\s*(${nodeIdentifier})\\s*\\)$`,
           ).exec(p.control ?? '');
           if (!control)
             throw new Error(
@@ -358,6 +367,56 @@ export function parse(source: string): ParseResult {
       });
     }
   });
+  const declaredNodeCount = doc.nodes.length;
+  const explicitWireCount = doc.wires.length;
+  // Every physical terminal is an intrinsic node. Legacy bindings become leads,
+  // keeping old source files electrically equivalent without detached endpoints.
+  for (const c of doc.components) {
+    c.nodes = terminalSuffixes(c.kind).map((_, port) => terminalId(c, port));
+    c.nodes.forEach((id, port) => {
+      const override = doc.nodes.find((node) => node.id === id);
+      const terminal = { component: c.id, port };
+      if (override?.placed)
+        diagnostics.push({
+          severity: 'error',
+          line: override.line,
+          message: `${id} is permanently attached. Set at= on ${c.id}, not on its terminal node.`,
+        });
+      if (override)
+        Object.assign(override, {
+          terminal,
+          position: terminalPosition(c, port),
+          placed: true,
+        });
+      else
+        doc.nodes.push({
+          id,
+          label: id,
+          line: 0,
+          placed: true,
+          position: terminalPosition(c, port),
+          terminal,
+        });
+      if (c.bindings[port] !== id)
+        doc.wires.push({
+          id: `${c.id}.${port}`,
+          from: c.bindings[port],
+          to: id,
+          label: '',
+          line: c.line,
+          implicit: true,
+        });
+    });
+  }
+  doc.nodes
+    .filter((n) => n.id.includes('.') && !n.terminal)
+    .forEach((n) =>
+      diagnostics.push({
+        severity: 'error',
+        line: n.line,
+        message: `Unknown element terminal “${n.id}”. Use Element.P / Element.N (op amps also have INP / INN).`,
+      }),
+    );
   const nodes = new Set(doc.nodes.map((n) => n.id));
   const checkNode = (node: string, line?: number) => {
     if (!nodes.has(node))
@@ -368,7 +427,7 @@ export function parse(source: string): ParseResult {
       });
   };
   for (const c of doc.components) {
-    c.nodes.forEach((n) => checkNode(n, c.line));
+    c.bindings.forEach((n) => checkNode(n, c.line));
     if (Array.isArray(c.control))
       c.control.forEach((n) => checkNode(n, c.line));
     else if (
@@ -399,9 +458,11 @@ export function parse(source: string): ParseResult {
     const component = doc.components.find((c) => c.id === id);
     const exists =
       a.quantity === 'voltage'
-        ? nodes.has(id) && port === undefined
+        ? nodes.has(a.target)
         : port !== undefined
-          ? component && Number(port) < component.nodes.length
+          ? component &&
+            terminalPort(component, port) >= 0 &&
+            terminalPort(component, port) < component.nodes.length
           : component || doc.wires.some((w) => w.id === id);
     if (!exists)
       diagnostics.push({
@@ -410,13 +471,13 @@ export function parse(source: string): ParseResult {
         message: `Unknown ${a.quantity} label target “${a.target}”.`,
       });
   }
-  if (doc.components.length + doc.nodes.length > 300)
+  if (doc.components.length + declaredNodeCount > 300)
     diagnostics.push({
       severity: 'error',
       message:
         'This educational solver supports up to 300 combined nodes and components.',
     });
-  if (doc.wires.length > 1000)
+  if (explicitWireCount > 1000)
     diagnostics.push({
       severity: 'error',
       message: 'Maximum 1,000 explicit wires.',

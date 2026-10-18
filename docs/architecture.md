@@ -2,11 +2,15 @@
 
 ## Circuit document and editing
 
-`CircuitDocument` contains named junctions, component terminal bindings, explicit wire segments, annotations, layout metadata, reference, analysis settings, and source text. Identifiers remain stable when labels or layout change. Components store their own graphical position separately from node positions.
+`CircuitDocument` contains named junctions, intrinsic terminal nodes, components, wire segments, annotations, layout metadata, reference, analysis settings, and source text. Every element owns permanent terminal nodes (`P`/`N`, and also `INP`/`INN` for op amps). Their coordinates are derived from their owner's position and rotation on each parse and during drag previews; users cannot detach them or move them independently. Labels and references retain stable IDs through layout changes.
 
 The parser produces either a validated document plus warnings or line-specific errors. The last valid document remains visible when the current text is invalid. Visual actions patch only the affected source declarations, retaining comments and unrelated formatting, then reparse. This keeps one electrical representation rather than two divergent editors. Undo/redo stores bounded text snapshots, grouping adjacent typing changes.
 
-ELK layout is loaded on demand. It arranges the bipartite junction/component graph; SVG leads route orthogonally to the named junctions. Explicit junctions define connectivity, not line intersections. New components receive separate terminal junctions, so they can exist before they are wired.
+ELK layout is loaded on demand. For placement it maps attached terminals to their owning component vertices, rather than treating them as independent junctions. After placement, three coordinate-descent passes use the actual terminal positions to choose among quarter-turn orientations that face connected terminals toward their neighbors. Rotation never swaps terminal identities or current polarity. The renderer chooses orthogonal routes with outward terminal stubs and penalties for symbol-body intersections, wire crossings, and overlap. This is a heuristic, not a guarantee of crossing-free layout.
+
+New declarations can omit the terminal tuple: `resistor R1 resistance=1kOhm` creates `R1.P` and `R1.N` without standalone junction declarations. The older `(a,b)` syntax remains supported: `bindings` records those declarations, while `nodes` holds the intrinsic terminal IDs and implicit leads connect each binding to its physical terminal. Both forms feed the same solver. Terminal labels may be declared with `node R1.P label="Input"`; terminal `at=` overrides are rejected.
+
+The visual canvas has a resizable height and an expanded mode. Inspector headers/actions are separate from the scrolling content; their maximum height is bounded by the actual remaining canvas height. Touch scrolling is enabled on popup contents, and wheel events there do not zoom the canvas. Right-click dispatch uses the SVG object's selection identity and opens the same inspector. Theme colors use shared dark-mode tokens with existing light-color fallbacks; the choice is stored separately from project contents.
 
 ## Solver
 

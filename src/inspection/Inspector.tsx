@@ -11,6 +11,7 @@ import {
   componentInfo,
   outputNodes,
   terminalCurrent,
+  terminalPort,
   type CircuitDocument,
   type Sample,
   type Selection,
@@ -18,7 +19,6 @@ import {
 import { format } from '../model/format';
 import {
   declaration,
-  replaceLine,
   setAnnotation,
   setProperty,
   deleteSelection,
@@ -44,7 +44,7 @@ export function readProbe(
   if (port !== undefined) {
     const c = doc.components.find((c) => c.id === id);
     return c
-      ? terminalCurrent(c, Number(port), sample.currents[id])
+      ? terminalCurrent(c, terminalPort(c, port), sample.currents[id])
       : undefined;
   }
   return sample.currents[id] ?? sample.wireCurrents[id] ?? null;
@@ -100,7 +100,9 @@ export function Inspector({
   const rawProperty = (line: number, key: string, fallback: string) =>
     getProperty(doc.source, line, key, fallback);
   const edit = (key: string, value: string) => {
-    if (object) onChange(setProperty(doc.source, object.line, key, value));
+    if (node?.terminal && node.line === 0)
+      onChange(`${doc.source.trimEnd()}\nnode ${node.id} ${key}=${value}\n`);
+    else if (object) onChange(setProperty(doc.source, object.line, key, value));
   };
   const metric = (
     label: string,
@@ -150,217 +152,231 @@ export function Inspector({
           <span className="eyebrow">{name}</span>
           <h3>{selection.id}</h3>
         </div>
-        <button
-          className="icon-button"
-          aria-label="Close inspector"
-          onClick={onClose}
-        >
-          <X size={17} />
-        </button>
-      </div>
-      {stale && (
-        <div className="inspector-notice">
-          Run analysis to update measurements.
+        <div className="inspector-top-actions">
+          {(component || node?.terminal) && (
+            <button
+              className="rotate-button"
+              disabled={disabled}
+              onClick={() => {
+                const owner = component ?? c;
+                if (owner)
+                  onChange(
+                    setProperty(
+                      doc.source,
+                      owner.line,
+                      'rotate',
+                      String((owner.rotation + 90) % 360),
+                    ),
+                  );
+              }}
+            >
+              <RotateCw size={14} />
+              Rotate
+            </button>
+          )}
+          <button
+            className="icon-button"
+            aria-label="Close inspector"
+            onClick={onClose}
+          >
+            <X size={17} />
+          </button>
         </div>
-      )}
-      {object && (
-        <label className="field">
-          <span>Label</span>
+      </div>
+      <div
+        className="inspector-content"
+        tabIndex={0}
+        aria-label="Inspector details"
+      >
+        {stale && (
+          <div className="inspector-notice">
+            Run analysis to update measurements.
+          </div>
+        )}
+        {object && (
+          <label className="field">
+            <span>Label</span>
+            <input
+              aria-label="Element or node label"
+              key={`${object.id}-${object.label}`}
+              defaultValue={object.label}
+              disabled={disabled}
+              onBlur={(e) => {
+                if (e.target.value !== object.label)
+                  edit('label', JSON.stringify(e.target.value));
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+              }}
+            />
+          </label>
+        )}
+        {component &&
+          component.kind !== 'opamp' &&
+          field(
+            componentInfo[component.kind].parameter,
+            componentInfo[component.kind].parameter,
+            String(component.value),
+          )}
+        <div className="metrics">
+          {node ? (
+            metric(
+              `Voltage vs ${doc.reference}`,
+              sample?.voltages[node.id],
+              'V',
+              { quantity: 'voltage', target: node.id },
+            )
+          ) : (
+            <>
+              {component &&
+                metric(
+                  component.kind === 'opamp'
+                    ? 'Output voltage'
+                    : 'Voltage drop',
+                  sample?.elementVoltages[component.id],
+                  'V',
+                  { quantity: 'voltage', target: component.id },
+                )}
+              {metric('Current', current, 'A', {
+                quantity: 'current',
+                target: selection.id,
+              })}
+              {component &&
+                metric(
+                  component.kind === 'opamp'
+                    ? 'Output-port power'
+                    : 'Power absorbed',
+                  sample?.powers[component.id],
+                  'W',
+                  { quantity: 'power', target: component.id },
+                )}
+            </>
+          )}
+        </div>
+        {!node && (
+          <div className="direction">
+            <ArrowRight size={13} />
+            <span>
+              {component
+                ? outputNodes(component).join(' → ')
+                : wire
+                  ? `${wire.from} → ${wire.to}`
+                  : c
+                    ? `${c.nodes[port]} → ${c.id} terminal ${port}`
+                    : ''}
+            </span>
+          </div>
+        )}
+        {component?.kind === 'opamp' && (
+          <p className="measurement-note">
+            Supply consumption is not modeled. Input currents are 0 A; output
+            power may be delivered or absorbed.
+          </p>
+        )}
+        {component && component.kind !== 'opamp' && (
+          <p className="measurement-note">
+            Positive power is absorbed; negative power is delivered.
+          </p>
+        )}
+        {!stale && sample && current === null && !node && (
+          <p className="measurement-note">
+            The circuit does not define a unique current for this branch.
+          </p>
+        )}
+        <label className="field pin-field">
+          <span>
+            <Pin size={12} /> Pinned {quantity} label
+          </span>
           <input
-            aria-label="Element or node label"
-            key={`${object.id}-${object.label}`}
-            defaultValue={object.label}
+            aria-label="Pinned measurement label"
+            key={annotation?.text ?? ''}
+            placeholder={node ? 'e.g. Vout' : 'e.g. Iin'}
+            defaultValue={annotation?.text ?? ''}
             disabled={disabled}
             onBlur={(e) => {
-              if (e.target.value !== object.label)
-                edit('label', JSON.stringify(e.target.value));
+              if (e.target.value !== (annotation?.text ?? ''))
+                onChange(
+                  setAnnotation(doc, quantity, selection.id, e.target.value),
+                );
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') e.currentTarget.blur();
             }}
           />
         </label>
-      )}
-      {component &&
-        component.kind !== 'opamp' &&
-        field(
-          componentInfo[component.kind].parameter,
-          componentInfo[component.kind].parameter,
-          String(component.value),
-        )}
-      <div className="metrics">
-        {node ? (
-          metric(
-            `Voltage vs ${doc.reference}`,
-            sample?.voltages[node.id],
-            'V',
-            { quantity: 'voltage', target: node.id },
-          )
-        ) : (
-          <>
-            {component &&
-              metric(
-                component.kind === 'opamp' ? 'Output voltage' : 'Voltage drop',
-                sample?.elementVoltages[component.id],
-                'V',
-                { quantity: 'voltage', target: component.id },
+        {component && (
+          <details className="advanced">
+            <summary>Terminals & model settings</summary>
+            {component.nodes.map((n, i) => (
+              <label className="field" key={i}>
+                <span>
+                  {component.kind === 'opamp'
+                    ? ['+ input', '− input', 'Output', 'Return'][i]
+                    : i === 0
+                      ? 'Positive terminal'
+                      : 'Negative terminal'}
+                </span>
+                <code className="terminal-name">{n}</code>
+              </label>
+            ))}
+            {(component.kind === 'capacitor' ||
+              component.kind === 'inductor') &&
+              field(
+                component.kind === 'capacitor'
+                  ? 'Initial voltage'
+                  : 'Initial current',
+                component.kind === 'capacitor'
+                  ? 'initial_voltage'
+                  : 'initial_current',
+                '0',
               )}
-            {metric('Current', current, 'A', {
-              quantity: 'current',
-              target: selection.id,
-            })}
-            {component &&
-              metric(
-                component.kind === 'opamp'
-                  ? 'Output-port power'
-                  : 'Power absorbed',
-                sample?.powers[component.id],
-                'W',
-                { quantity: 'power', target: component.id },
+            {component.control &&
+              field(
+                'Control',
+                'control',
+                Array.isArray(component.control)
+                  ? `(${component.control.join(',')})`
+                  : component.control,
               )}
-          </>
+            {['voltage_source', 'current_source'].includes(component.kind) && (
+              <>
+                <label className="field">
+                  <span>Waveform</span>
+                  <select
+                    aria-label="Source waveform"
+                    value={component.waveform.kind}
+                    disabled={disabled}
+                    onChange={(e) => edit('wave', e.target.value)}
+                  >
+                    {['dc', 'step', 'pulse', 'sine'].map((w) => (
+                      <option key={w}>{w}</option>
+                    ))}
+                  </select>
+                </label>
+                {component.waveform.kind !== 'dc' && (
+                  <>
+                    {field(
+                      'Amplitude',
+                      'amplitude',
+                      String(component.waveform.amplitude),
+                    )}
+                    {field('Offset', 'offset', '0')}
+                    {field('Delay', 'delay', '0s')}
+                  </>
+                )}
+                {component.waveform.kind === 'sine' &&
+                  field('Frequency', 'frequency', '50Hz')}
+                {component.waveform.kind === 'pulse' && (
+                  <>
+                    {field('Width', 'width', '5ms')}
+                    {field('Period', 'period', '10ms')}
+                  </>
+                )}
+              </>
+            )}
+          </details>
         )}
       </div>
-      {!node && (
-        <div className="direction">
-          <ArrowRight size={13} />
-          <span>
-            {component
-              ? outputNodes(component).join(' → ')
-              : wire
-                ? `${wire.from} → ${wire.to}`
-                : c
-                  ? `${c.nodes[port]} → ${c.id} terminal ${port}`
-                  : ''}
-          </span>
-        </div>
-      )}
-      {component?.kind === 'opamp' && (
-        <p className="measurement-note">
-          Supply consumption is not modeled. Input currents are 0 A; output
-          power may be delivered or absorbed.
-        </p>
-      )}
-      {component && component.kind !== 'opamp' && (
-        <p className="measurement-note">
-          Positive power is absorbed; negative power is delivered.
-        </p>
-      )}
-      {!stale && sample && current === null && !node && (
-        <p className="measurement-note">
-          The circuit does not define a unique current for this branch.
-        </p>
-      )}
-      <label className="field pin-field">
-        <span>
-          <Pin size={12} /> Pinned {quantity} label
-        </span>
-        <input
-          aria-label="Pinned measurement label"
-          key={annotation?.text ?? ''}
-          placeholder={node ? 'e.g. Vout' : 'e.g. Iin'}
-          defaultValue={annotation?.text ?? ''}
-          disabled={disabled}
-          onBlur={(e) => {
-            if (e.target.value !== (annotation?.text ?? ''))
-              onChange(
-                setAnnotation(doc, quantity, selection.id, e.target.value),
-              );
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') e.currentTarget.blur();
-          }}
-        />
-      </label>
-      {component && (
-        <details className="advanced">
-          <summary>Terminals & model settings</summary>
-          {component.nodes.map((n, i) => (
-            <label className="field" key={i}>
-              <span>
-                {component.kind === 'opamp'
-                  ? ['+ input', '− input', 'Output', 'Return'][i]
-                  : i === 0
-                    ? 'Positive terminal'
-                    : 'Negative terminal'}
-              </span>
-              <select
-                aria-label={`Terminal ${i}`}
-                disabled={disabled}
-                value={n}
-                onChange={(e) => {
-                  const nodes = [...component.nodes];
-                  nodes[i] = e.target.value;
-                  const body = splitComment(
-                    doc.source.split('\n')[component.line - 1],
-                  )[0]
-                    .trim()
-                    .replace(/\([^)]*\)/, `(${nodes.join(',')})`);
-                  onChange(replaceLine(doc.source, component.line, body));
-                }}
-              >
-                {doc.nodes.map((n) => (
-                  <option key={n.id}>{n.id}</option>
-                ))}
-              </select>
-            </label>
-          ))}
-          {(component.kind === 'capacitor' || component.kind === 'inductor') &&
-            field(
-              component.kind === 'capacitor'
-                ? 'Initial voltage'
-                : 'Initial current',
-              component.kind === 'capacitor'
-                ? 'initial_voltage'
-                : 'initial_current',
-              '0',
-            )}
-          {component.control &&
-            field(
-              'Control',
-              'control',
-              Array.isArray(component.control)
-                ? `(${component.control.join(',')})`
-                : component.control,
-            )}
-          {['voltage_source', 'current_source'].includes(component.kind) && (
-            <>
-              <label className="field">
-                <span>Waveform</span>
-                <select
-                  aria-label="Source waveform"
-                  value={component.waveform.kind}
-                  disabled={disabled}
-                  onChange={(e) => edit('wave', e.target.value)}
-                >
-                  {['dc', 'step', 'pulse', 'sine'].map((w) => (
-                    <option key={w}>{w}</option>
-                  ))}
-                </select>
-              </label>
-              {component.waveform.kind !== 'dc' && (
-                <>
-                  {field(
-                    'Amplitude',
-                    'amplitude',
-                    String(component.waveform.amplitude),
-                  )}
-                  {field('Offset', 'offset', '0')}
-                  {field('Delay', 'delay', '0s')}
-                </>
-              )}
-              {component.waveform.kind === 'sine' &&
-                field('Frequency', 'frequency', '50Hz')}
-              {component.waveform.kind === 'pulse' && (
-                <>
-                  {field('Width', 'width', '5ms')}
-                  {field('Period', 'period', '10ms')}
-                </>
-              )}
-            </>
-          )}
-        </details>
-      )}
       <div className="inspector-actions">
         {node && (
           <button
@@ -377,17 +393,6 @@ export function Inspector({
             {referenceDeclared && doc.reference === node.id
               ? 'Reference node'
               : 'Set as reference'}
-          </button>
-        )}
-        {component && (
-          <button
-            disabled={disabled}
-            onClick={() =>
-              edit('rotate', String((component.rotation + 90) % 360))
-            }
-          >
-            <RotateCw size={13} />
-            Rotate
           </button>
         )}
         {selection.kind !== 'lead' && (

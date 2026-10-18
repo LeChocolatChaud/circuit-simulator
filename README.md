@@ -28,9 +28,11 @@ For browser tests, first run `npx playwright install chromium`. To use an existi
 
 ## Use the workbench
 
-- Add components from the library. Each new component starts with separate terminal nodes, ready to connect.
+- Add components from the library. Each element has permanent **`Element.P` and `Element.N` nodes attached to its ends**. They follow the element when it moves or rotates; they cannot be moved independently. Op amps also have attached `INP` and `INN` inputs.
 - Use **Connect nodes**, then click two junctions or terminals. Crossings connect only through explicit junctions. Use **Add node** to place another junction.
-- Drag components and nodes, rotate components through their popup, scroll to zoom, or use **Pan canvas**, **Fit circuit**, and **Arrange**.
+- Drag components or standalone junctions. Rotate selected elements from the top toolbar or popup header. **Arrange** changes both element positions and rotations, and wires route around symbol bodies. Scroll to zoom, or use **Pan canvas** and **Fit circuit**.
+- Right-click an element, terminal, or wire to open the website's inspector. Right-click empty canvas for canvas actions. Long popups scroll internally; their header and actions remain accessible. Enlarge the visual editor with **Expand editor**, or resize its bottom edge on desktop.
+- Use the moon/sun button to choose dark or light mode. The app remembers this preference on your device and initially follows your system theme.
 - Click a component for terminal voltage, signed current, and signed power. Click a node for voltage or to set the reference. Click a wire or terminal lead for branch current.
 - Edit labels and values in the popup. Pin node-voltage or branch-current labels beside objects. Click a measurement to select it in the analysis panel.
 - Choose **DC** or **Transient** and click **Run analysis**. In transient mode, set the timestep, stop time, and initialization mode. Move the time cursor or click the waveform to inspect that instant.
@@ -42,16 +44,16 @@ Changes save automatically in this browser's local storage. Export a versioned `
 
 ```text
 circuit "RC example"
-node supply
-node out label="Output"
-node gnd
-reference gnd
+voltage_source V1 dc=5V
+resistor R1 resistance=1kOhm
+capacitor C1 capacitance=10uF initial_voltage=0V
+wire W1 V1.P R1.P
+wire W2 R1.N C1.P
+wire W3 C1.N V1.N
+reference V1.N
+node C1.P label="Output"
 
-voltage_source V1 (supply,gnd) dc=5V
-resistor R1 (supply,out) resistance=1kOhm
-capacitor C1 (out,gnd) capacitance=10uF initial_voltage=0V
-
-label voltage(out) "Vout"
+label voltage(C1.P) "Vout"
 label current(R1) "Charge current"
 analysis transient stop=50ms step=100us initialization=explicit
 ```
@@ -66,7 +68,7 @@ Positive current flows from the first terminal to the second; positive power is 
 
 Wire currents are reconstructed from junction-level Kirchhoff equations where unique. Ideal wire loops and identical parallel ideal sources can have indeterminate current splits. Floating node voltages can be indeterminate even when a component's voltage drop or current is known.
 
-This first version supports up to 300 combined nodes/components, 1,000 explicit wires, 500 KB circuit text, and 20,000 transient steps. Long runs retain approximately 2,001 display frames, including the final time. There are no AC sweeps, nonlinear semiconductor models, adaptive timesteps, cloud sync, or multi-user editing yet.
+This first version supports up to 300 combined declared junctions/components (intrinsic terminal nodes are additional), 1,000 explicit wires, 500 KB circuit text, and 20,000 transient steps. Long runs retain approximately 2,001 display frames, including the final time. There are no AC sweeps, nonlinear semiconductor models, adaptive timesteps, cloud sync, or multi-user editing yet.
 
 ## Structure and validation
 

@@ -15,6 +15,11 @@ import {
   Layers2,
   LayoutGrid,
   LoaderCircle,
+  Moon,
+  Sun,
+  Expand,
+  Shrink,
+  RotateCw,
   Play,
   Redo2,
   Save,
@@ -34,7 +39,7 @@ import { declaration, deleteSelection, setProperty } from './language/edit';
 import { examples } from './model/examples';
 import {
   componentInfo,
-  terminalPosition,
+  terminalSuffixes,
   type CircuitDocument,
   type ComponentKind,
   type Point,
@@ -49,6 +54,7 @@ import {
   project,
   saveLocal,
 } from './storage/projects';
+import { applyTheme, loadTheme } from './storage/theme';
 
 const initialDocument = parse(examples.divider).document!;
 const exampleNames: Record<keyof typeof examples, string> = {
@@ -72,8 +78,8 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>(null);
   const [probe, setProbe] = useState<Probe>({
     quantity: 'voltage',
-    target: doc.nodes.some((n) => n.id === 'out')
-      ? 'out'
+    target: doc.nodes.some((n) => n.id === 'R1.N')
+      ? 'R1.N'
       : (doc.nodes[0]?.id ?? ''),
   });
   const [result, setResult] = useState<SimulationResult | null>(null);
@@ -82,6 +88,8 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [index, setIndex] = useState(0);
   const [textVisible, setTextVisible] = useState(true);
+  const [theme, setTheme] = useState(loadTheme);
+  const [expanded, setExpanded] = useState(false);
   const [help, setHelp] = useState(false);
   const [toast, setToast] = useState('');
   const [saveStatus, setSaveStatus] = useState<
@@ -100,6 +108,24 @@ export default function App() {
   const stale = source !== resultSource;
   const disabled = !parsed.document;
   const sample = !stale ? result?.samples[index] : undefined;
+  const rotationTarget = doc.components.find(
+    (c) =>
+      c.id ===
+      (selection?.kind === 'component'
+        ? selection.id
+        : selection?.kind === 'node'
+          ? doc.nodes.find((n) => n.id === selection.id)?.terminal?.component
+          : undefined),
+  );
+  useEffect(() => applyTheme(theme), [theme]);
+  useEffect(() => {
+    if (!expanded) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [expanded]);
 
   const commit = useCallback(
     (next: string) => {
@@ -227,6 +253,7 @@ export default function App() {
       if (event.key === 'Escape') {
         setSelection(null);
         setHelp(false);
+        setExpanded(false);
       }
     };
     window.addEventListener('keydown', keyboard);
@@ -240,9 +267,11 @@ export default function App() {
     let i = 1;
     while (
       ids.has(`${prefix}${i}`) ||
-      Array.from({ length: ports }, (_, port) => `${prefix}${i}_p${port}`).some(
-        (id) => ids.has(id),
-      )
+      Array.from(
+        { length: ports },
+        (_, port) =>
+          `${prefix}${i}.${['INP', 'INN', 'P', 'N'][ports === 4 ? port : port + 2]}`,
+      ).some((id) => ids.has(id))
     )
       i++;
     return `${prefix}${i}`;
@@ -267,19 +296,15 @@ export default function App() {
       x: 240 + (doc.components.length % 4) * 150,
       y: 240 + Math.floor(doc.components.length / 4) * 140,
     };
-    const nodes = Array.from({ length: count }, (_, i) => `${id}_p${i}`);
+    const nodes = terminalSuffixes(kind).map((suffix) => `${id}.${suffix}`);
     let next = source.trimEnd();
-    nodes.forEach((node, i) => {
-      const p = terminalPosition({ position, rotation: 0, kind }, i);
-      next += `\nnode ${node} at=(${p.x},${p.y})`;
-    });
     const control =
       kind === 'vcvs' || kind === 'vccs'
         ? ` control=(${doc.nodes[0]?.id ?? nodes[0]},${doc.reference || nodes[1]})`
         : kind === 'ccvs' || kind === 'cccs'
           ? ` control=${doc.components[0]?.id ?? id}`
           : '';
-    next += `\n${kind} ${id} (${nodes.join(',')})${info.parameter ? ` ${info.parameter}=${info.defaultValue}` : ''}${control} at=(${position.x},${position.y})\n`;
+    next += `\n${kind} ${id}${info.parameter ? ` ${info.parameter}=${info.defaultValue}` : ''}${control} at=(${position.x},${position.y})\n`;
     if (!doc.nodes.length) next += `reference ${nodes[count - 1]}\n`;
     commit(next);
     setSelection({ kind: 'component', id });
@@ -289,7 +314,7 @@ export default function App() {
       selection.kind === 'node'
         ? doc.nodes.find((n) => n.id === selection.id)
         : doc.components.find((c) => c.id === selection.id);
-    if (item)
+    if (item && !('terminal' in item && item.terminal))
       commit(setProperty(source, item.line, 'at', `(${point.x},${point.y})`));
   };
   const select = (next: Selection) => {
@@ -306,11 +331,15 @@ export default function App() {
     setProbe({
       quantity: 'voltage',
       target:
-        key === 'opamp' || key === 'dependent'
-          ? 'output'
-          : key === 'open'
-            ? 'dangling'
-            : 'out',
+        key === 'opamp'
+          ? 'U1.P'
+          : key === 'dependent'
+            ? 'E1.P'
+            : key === 'rc'
+              ? 'C1.P'
+              : key === 'rl'
+                ? 'L1.P'
+                : 'R1.N',
     });
     setToast(
       `Opened ${exampleNames[key]}. Undo to restore your previous circuit.`,
@@ -392,6 +421,16 @@ export default function App() {
               ? 'Saving locally…'
               : 'Local save unavailable · export a copy'}
         </span>
+        <button
+          className="icon-button theme-toggle"
+          aria-label={
+            theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'
+          }
+          title={theme === 'light' ? 'Dark mode' : 'Light mode'}
+          onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
+        >
+          {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+        </button>
         <button
           className="header-help icon-button"
           aria-label="Open guide"
@@ -563,7 +602,9 @@ export default function App() {
               </div>
             </div>
           </div>
-          <div className="workspace-card">
+          <div
+            className={`workspace-card ${expanded ? 'workspace-expanded' : ''}`}
+          >
             <div className="workspace-card-heading">
               <div>
                 <span className="section-number">01</span>
@@ -573,6 +614,24 @@ export default function App() {
                 </span>
               </div>
               <div className="design-actions">
+                <button
+                  className="subtle-button top-rotate"
+                  disabled={disabled || !rotationTarget}
+                  onClick={() => {
+                    if (rotationTarget)
+                      commit(
+                        setProperty(
+                          source,
+                          rotationTarget.line,
+                          'rotate',
+                          String((rotationTarget.rotation + 90) % 360),
+                        ),
+                      );
+                  }}
+                >
+                  <RotateCw size={14} />
+                  Rotate element
+                </button>
                 <button
                   className="icon-button"
                   title="Undo"
@@ -613,6 +672,15 @@ export default function App() {
                   <Code2 size={15} />
                   Circuit text
                 </button>
+                <button
+                  className="icon-button"
+                  aria-label={expanded ? 'Restore editor' : 'Expand editor'}
+                  title={expanded ? 'Restore editor' : 'Expand editor'}
+                  aria-pressed={expanded}
+                  onClick={() => setExpanded((v) => !v)}
+                >
+                  {expanded ? <Shrink size={16} /> : <Expand size={16} />}
+                </button>
               </div>
             </div>
             <div className={`design-split ${textVisible ? '' : 'hide-text'}`}>
@@ -624,6 +692,7 @@ export default function App() {
                 onMove={move}
                 onNode={addNode}
                 onWire={addWire}
+                onArrange={layout}
                 sample={sample}
                 stale={stale}
                 disabled={disabled}
@@ -943,22 +1012,24 @@ export default function App() {
           </p>
           <h3>Build & inspect</h3>
           <p>
-            Add components from the library. Drag symbols and junctions to move
-            them. Use <strong>Connect nodes</strong> to connect two junctions or
-            terminals. Crossings only connect at explicit junctions. Click an
-            object to see voltage, current, and power, edit its label, or pin a
-            measurement to the schematic.
+            Add components from the library. Drag symbols or standalone
+            junctions; P/N nodes stay permanently attached to the element's
+            ends. Use
+            <strong> Connect nodes</strong> to connect endpoints. Crossings only
+            connect at explicit junctions. Click or right-click an object to
+            inspect it. Rotate is at the top; long popup contents scroll. Use
+            <strong> Expand editor</strong> for more canvas space.
           </p>
           <h3>Circuit description language</h3>
-          <pre>{`circuit "My circuit"\nnode supply\nnode out\nnode gnd\nreference gnd\nvoltage_source V1 (supply,gnd) dc=5V\nresistor R1 (supply,out) resistance=1kOhm\ncapacitor C1 (out,gnd) capacitance=10uF\nlabel voltage(out) "Vout"\nanalysis transient stop=50ms step=100us\n  # Put analysis settings on one line.`}</pre>
+          <pre>{`circuit "My circuit"\nvoltage_source V1 dc=5V\nresistor R1 resistance=1kOhm\ncapacitor C1 capacitance=10uF\nwire W1 V1.P R1.P\nwire W2 R1.N C1.P\nwire W3 C1.N V1.N\nreference V1.N\nlabel voltage(C1.P) "Vout"\nanalysis transient stop=50ms step=100us`}</pre>
           <p>
-            Component terminal order sets voltage polarity and current
-            direction. An op amp takes{' '}
-            <code>(in_plus,in_minus,output,return)</code>. Controlled sources
-            use <code>control=(a,b)</code> or <code>control=V1</code> and{' '}
-            <code>gain=2</code>. Source waveforms use <code>wave=step</code>,{' '}
-            <code>pulse</code>, or <code>sine</code> with amplitude, offset, and
-            timing parameters.
+            Element terminals are <code>R1.P</code> and <code>R1.N</code>.
+            Positive current flows P → N. Op amps also have attached
+            <code> INP</code> and <code>INN</code> input nodes. Controlled
+            sources use <code>control=(V1.P,V1.N)</code> or{' '}
+            <code>control=V1</code> and <code>gain=2</code>. Source waveforms
+            use <code>wave=step</code>, <code>pulse</code>, or <code>sine</code>{' '}
+            with amplitude, offset, and timing parameters.
           </p>
           <h3>Units & results</h3>
           <p>

@@ -26,11 +26,14 @@ export interface CircuitNode {
   position: Point;
   line: number;
   placed: boolean;
+  terminal?: { component: string; port: number };
 }
 export interface Component {
   id: string;
   kind: ComponentKind;
   nodes: string[];
+  /** Declared junction bindings; nodes contains the attached terminal node IDs. */
+  bindings: string[];
   value: number;
   label: string;
   position: Point;
@@ -47,6 +50,7 @@ export interface Wire {
   to: string;
   label: string;
   line: number;
+  implicit?: boolean;
 }
 export interface Annotation {
   quantity: 'voltage' | 'current';
@@ -202,6 +206,23 @@ export function terminalCurrent(
   if (c.kind === 'opamp' && port < 2) return 0;
   return current === null ? null : current * (port % 2 === 0 ? 1 : -1);
 }
+export function terminalSuffixes(kind: ComponentKind): string[] {
+  return kind === 'opamp' ? ['INP', 'INN', 'P', 'N'] : ['P', 'N'];
+}
+export function terminalId(
+  c: Pick<Component, 'id' | 'kind'>,
+  port: number,
+): string {
+  return `${c.id}.${terminalSuffixes(c.kind)[port]}`;
+}
+export function terminalPort(
+  c: Pick<Component, 'kind'>,
+  suffix: string,
+): number {
+  return /^\d$/.test(suffix)
+    ? Number(suffix)
+    : terminalSuffixes(c.kind).indexOf(suffix);
+}
 export function terminalPosition(
   c: Pick<Component, 'kind' | 'position' | 'rotation'>,
   port: number,
@@ -217,7 +238,15 @@ export function terminalPosition(
       : { x: port === 0 ? -48 : 48, y: 0 };
   const angle = (c.rotation * Math.PI) / 180;
   return {
-    x: c.position.x + local.x * Math.cos(angle) - local.y * Math.sin(angle),
-    y: c.position.y + local.x * Math.sin(angle) + local.y * Math.cos(angle),
+    x:
+      Math.round(
+        (c.position.x + local.x * Math.cos(angle) - local.y * Math.sin(angle)) *
+          1e6,
+      ) / 1e6,
+    y:
+      Math.round(
+        (c.position.y + local.x * Math.sin(angle) + local.y * Math.cos(angle)) *
+          1e6,
+      ) / 1e6,
   };
 }

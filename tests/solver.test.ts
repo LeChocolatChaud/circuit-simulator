@@ -44,7 +44,7 @@ describe('linear solver', () => {
 describe('DC and measurement conventions', () => {
   it('solves a divider, signed power, wire direction, and power balance', () => {
     const sample = run(examples.divider).samples[0];
-    expect(sample.voltages.out).toBeCloseTo(4);
+    expect(sample.voltages['R1.N']).toBeCloseTo(4);
     expect(sample.currents.R1).toBeCloseTo(0.004);
     expect(sample.currents.R2).toBeCloseTo(0.004);
     expect(sample.currents.V1).toBeCloseTo(-0.004);
@@ -59,9 +59,9 @@ describe('DC and measurement conventions', () => {
   it('changing reference shifts voltages and preserves currents and power', () => {
     const doc = document(examples.divider);
     const first = simulate(doc).samples[0];
-    const second = simulate({ ...doc, reference: 'supply' }).samples[0];
-    expect(second.voltages.out).toBeCloseTo(-8);
-    expect(second.voltages.gnd).toBeCloseTo(-12);
+    const second = simulate({ ...doc, reference: 'V1.P' }).samples[0];
+    expect(second.voltages['R1.N']).toBeCloseTo(-8);
+    expect(second.voltages['V1.N']).toBeCloseTo(-12);
     for (const c of doc.components) {
       expect(second.currents[c.id]).toBeCloseTo(first.currents[c.id]!);
       expect(second.powers[c.id]).toBeCloseTo(first.powers[c.id]!);
@@ -108,7 +108,7 @@ describe('DC and measurement conventions', () => {
   });
   it('solves ideal op-amp feedback with output-port power', () => {
     const sample = run(examples.opamp).samples[0];
-    expect(sample.voltages.output).toBeCloseTo(2);
+    expect(sample.voltages['U1.P']).toBeCloseTo(2);
     expect(sample.currents.U1).toBeCloseTo(-0.002);
     expect(sample.powers.U1).toBeCloseTo(-0.004);
   });
@@ -123,8 +123,8 @@ describe('DC and measurement conventions', () => {
     const result = run(examples.open);
     const sample = result.samples[0];
     expect(sample.currents.R1).toBeCloseTo(0);
-    expect(sample.voltages.dangling).toBeCloseTo(5);
-    expect(sample.voltages.floating_a).toBeNull();
+    expect(sample.voltages['R1.N']).toBeCloseTo(5);
+    expect(sample.voltages['R2.P']).toBeNull();
     expect(sample.elementVoltages.R2).toBeCloseTo(0);
     expect(sample.currents.R2).toBeCloseTo(0);
     expect(
@@ -141,11 +141,9 @@ describe('DC and measurement conventions', () => {
     );
     expect(result.samples[0].voltages.b).toBeCloseTo(0);
     expect(result.samples[0].currents.R1).toBeCloseTo(0.005);
-    expect(Object.values(result.samples[0].wireCurrents)).toEqual([
-      null,
-      null,
-      null,
-    ]);
+    expect(
+      ['W1', 'W2', 'W3'].map((id) => result.samples[0].wireCurrents[id]),
+    ).toEqual([null, null, null]);
   });
   it('marks the current split between identical ideal sources as ambiguous', () => {
     const sample = run(
@@ -173,13 +171,13 @@ describe('transient integration', () => {
     const fine = run(examples.rc);
     const atTau = fine.samples[100];
     expect(atTau.time).toBeCloseTo(0.01);
-    expect(atTau.voltages.out).toBeCloseTo(5 * (1 - (1 / 1.01) ** 100), 8);
+    expect(atTau.voltages['C1.P']).toBeCloseTo(5 * (1 - (1 / 1.01) ** 100), 8);
     const coarse = run(examples.rc.replace('step=100us', 'step=1ms'));
     const exact = 5 * (1 - Math.exp(-1));
-    expect(Math.abs(atTau.voltages.out! - exact)).toBeLessThan(
-      Math.abs(coarse.samples[10].voltages.out! - exact),
+    expect(Math.abs(atTau.voltages['C1.P']! - exact)).toBeLessThan(
+      Math.abs(coarse.samples[10].voltages['C1.P']! - exact),
     );
-    expect(fine.samples.at(-1)?.voltages.out).toBeCloseTo(
+    expect(fine.samples.at(-1)?.voltages['C1.P']).toBeCloseTo(
       5 * (1 - Math.exp(-6)),
       2,
     );
@@ -196,8 +194,8 @@ describe('transient integration', () => {
     const result = run(
       examples.rc.replace('initialization=explicit', 'initialization=dc'),
     );
-    expect(result.samples[0].voltages.out).toBeCloseTo(5);
-    expect(result.samples.at(-1)?.voltages.out).toBeCloseTo(5);
+    expect(result.samples[0].voltages['C1.P']).toBeCloseTo(5);
+    expect(result.samples.at(-1)?.voltages['C1.P']).toBeCloseTo(5);
   });
   it('rejects incompatible explicit initial conditions', () => {
     const result = simulate(

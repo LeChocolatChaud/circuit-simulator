@@ -80,51 +80,58 @@ export function deleteSelection(
   doc: CircuitDocument,
   selection: Selection,
 ): string {
-  if (!selection) return doc.source;
+  if (!selection || selection.kind === 'lead') return doc.source;
   const removed = new Set<string>([selection.id]);
-  const lines = new Set<number>();
-  if (selection.kind === 'node') {
-    const node = doc.nodes.find((n) => n.id === selection.id);
-    if (node) lines.add(node.line);
-    doc.components
-      .filter(
-        (c) =>
-          c.nodes.includes(selection.id) ||
-          (Array.isArray(c.control) && c.control.includes(selection.id)),
-      )
-      .forEach((c) => removed.add(c.id));
-    doc.wires
-      .filter((w) => w.from === selection.id || w.to === selection.id)
-      .forEach((w) => removed.add(w.id));
-  }
-  // Delete dependent sources whose controlling components are removed as well.
+  const selectedNode = doc.nodes.find((n) => n.id === selection.id);
+  if (selection.kind === 'node' && selectedNode?.terminal)
+    removed.add(selectedNode.terminal.component);
   let changed = true;
   while (changed) {
     changed = false;
-    doc.components.forEach((c) => {
-      if (
-        typeof c.control === 'string' &&
-        removed.has(c.control) &&
-        !removed.has(c.id)
-      ) {
+    for (const c of doc.components) {
+      const affected =
+        c.bindings.some((n) => removed.has(n)) ||
+        (Array.isArray(c.control)
+          ? c.control.some((n) => removed.has(n))
+          : !!c.control && removed.has(c.control));
+      if (affected && !removed.has(c.id)) {
         removed.add(c.id);
         changed = true;
       }
-    });
+      if (removed.has(c.id))
+        for (const id of c.nodes)
+          if (!removed.has(id)) {
+            removed.add(id);
+            changed = true;
+          }
+    }
   }
+  const lines = new Set<number>();
+  doc.nodes
+    .filter((n) => removed.has(n.id) && n.line > 0)
+    .forEach((n) => lines.add(n.line));
   doc.components
     .filter((c) => removed.has(c.id))
     .forEach((c) => lines.add(c.line));
-  doc.wires.filter((w) => removed.has(w.id)).forEach((w) => lines.add(w.line));
+  doc.wires
+    .filter(
+      (w) =>
+        !w.implicit &&
+        (removed.has(w.id) || removed.has(w.from) || removed.has(w.to)),
+    )
+    .forEach((w) => {
+      lines.add(w.line);
+      removed.add(w.id);
+    });
   doc.annotations
-    .filter((a) => removed.has(a.target.split('.')[0]))
+    .filter((a) => removed.has(a.target) || removed.has(a.target.split('.')[0]))
     .forEach((a) => lines.add(a.line));
   let source = doc.source;
   lines.forEach((line) => {
     source = replaceLine(source, line, '');
   });
-  if (selection.kind === 'node' && doc.reference === selection.id) {
-    const next = doc.nodes.find((n) => n.id !== selection.id);
+  if (removed.has(doc.reference)) {
+    const next = doc.nodes.find((n) => !removed.has(n.id));
     const refLine = source
       .split('\n')
       .findIndex((l) => splitComment(l)[0].trim().startsWith('reference '));
