@@ -508,18 +508,44 @@ export function Canvas({
     if (container.current?.hasPointerCapture(event.pointerId))
       container.current.releasePointerCapture(event.pointerId);
   };
-  const zoom = (
-    factor: number,
-    center = { x: size.width / 2, y: size.height / 2 },
-  ) =>
-    setView((v) => {
-      const scale = Math.max(0.15, Math.min(3, v.scale * factor));
-      return {
-        scale,
-        x: center.x - ((center.x - v.x) * scale) / v.scale,
-        y: center.y - ((center.y - v.y) * scale) / v.scale,
-      };
-    });
+  const zoom = useCallback(
+    (factor: number, center = { x: size.width / 2, y: size.height / 2 }) =>
+      setView((v) => {
+        const scale = Math.max(0.15, Math.min(3, v.scale * factor));
+        return {
+          scale,
+          x: center.x - ((center.x - v.x) * scale) / v.scale,
+          y: center.y - ((center.y - v.y) * scale) / v.scale,
+        };
+      }),
+    [size.width, size.height],
+  );
+  useEffect(() => {
+    const canvas = container.current;
+    if (!canvas) return;
+    const wheel = (event: WheelEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('.inspector-anchor, .canvas-context-menu')) {
+        const content = target.closest('.inspector-content');
+        // Scrollable popup content uses native scrolling with CSS containment.
+        // Headers, actions, and short popups must not scroll the page either.
+        if (!content || content.scrollHeight <= content.clientHeight)
+          event.preventDefault();
+        return;
+      }
+      event.preventDefault();
+      if (!event.deltaY) return;
+      const rect = canvas.getBoundingClientRect();
+      zoom(event.deltaY < 0 ? 1.08 : 0.925, {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      });
+    };
+    // React delegates wheel events passively; a native non-passive listener
+    // lets zoom consume the gesture instead of also scrolling the document.
+    canvas.addEventListener('wheel', wheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', wheel);
+  }, [zoom]);
   const previewTarget =
     wireStart && cursor
       ? connectionTarget(cursor, nodes, doc.wires, routes, view.scale)
@@ -666,15 +692,6 @@ export function Canvas({
             setContextMenu(true);
           }
           setContextPoint(screen(event));
-        }}
-        onWheel={(event) => {
-          if (
-            (event.target as Element).closest(
-              '.inspector-anchor, .canvas-context-menu',
-            )
-          )
-            return;
-          zoom(event.deltaY < 0 ? 1.08 : 0.925, screen(event));
         }}
         onPointerMove={(event) => {
           const point = screen(event);

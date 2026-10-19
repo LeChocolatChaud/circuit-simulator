@@ -28,6 +28,17 @@ async function dragBetween(
   await page.mouse.up();
 }
 
+async function wheel(page: Page, deltaX: number, deltaY: number) {
+  await page.mouse.wheel(deltaX, deltaY);
+  // Native scrolling is asynchronous; allow the browser to paint its result.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
+}
+
 const bulkSource = `circuit "Bulk selection"
 resistor R1 resistance=1kOhm at=(200,200)
 resistor R2 resistance=2kOhm at=(400,200)
@@ -448,7 +459,48 @@ test('imports plain circuit text with automatic layout and reports unavailable b
   ).toBeEnabled();
 });
 
-test('right-click opens the site inspector and its expanded contents scroll without zooming the canvas', async ({
+test('canvas wheel zoom consumes page scrolling, including at the zoom limit', async ({
+  page,
+}) => {
+  expect(
+    await page.evaluate(() => document.documentElement.scrollHeight),
+  ).toBeGreaterThan(1100);
+  await page.evaluate(() => window.scrollTo(0, 80));
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(80);
+  const canvas = page.locator('.canvas');
+  const scale = page.locator('.zoom-controls > span');
+  await canvas.hover({ position: { x: 40, y: 40 } });
+  const pagePosition = await page.evaluate(() => ({
+    x: window.scrollX,
+    y: window.scrollY,
+  }));
+  const initialScale = await scale.textContent();
+  await wheel(page, 0, 600);
+  await expect(scale).not.toHaveText(initialScale!);
+  expect(
+    await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY })),
+  ).toEqual(pagePosition);
+
+  for (let i = 0; i < 8; i++)
+    await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await expect(scale).toHaveText('300%');
+  await canvas.hover({ position: { x: 40, y: 40 } });
+  await wheel(page, 0, -600);
+  await expect(scale).toHaveText('300%');
+  await wheel(page, 600, 0);
+  await expect(scale).toHaveText('300%');
+  expect(
+    await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY })),
+  ).toEqual(pagePosition);
+
+  await page.getByRole('heading', { level: 1 }).hover();
+  await wheel(page, 0, 400);
+  await expect
+    .poll(() => page.evaluate(() => window.scrollY))
+    .toBeGreaterThan(pagePosition.y);
+});
+
+test('right-click opens the site inspector and its expanded contents scroll without zooming the canvas or page', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
@@ -467,6 +519,7 @@ test('right-click opens the site inspector and its expanded contents scroll with
   await inspector.getByText('Terminals & model settings').click();
   const scroll = page.getByLabel('Inspector details');
   await scroll.hover();
+  const initialPageY = await page.evaluate(() => window.scrollY);
   await page.mouse.wheel(0, 600);
   await expect(
     inspector.getByRole('combobox', { name: 'Source waveform' }),
@@ -484,6 +537,22 @@ test('right-click opens the site inspector and its expanded contents scroll with
     inspector.getByRole('textbox', { name: 'Period', exact: true }),
   ).toBeInViewport();
   expect(await page.locator('.zoom-controls > span').textContent()).toBe(scale);
+  expect(await page.evaluate(() => window.scrollY)).toBe(initialPageY);
+  for (const edge of ['bottom', 'top']) {
+    await scroll.evaluate((element, edge) => {
+      element.scrollTop = edge === 'bottom' ? element.scrollHeight : 0;
+    }, edge);
+    await scroll.hover();
+    await wheel(page, 0, edge === 'bottom' ? 600 : -600);
+    expect(await page.evaluate(() => window.scrollY)).toBe(initialPageY);
+  }
+  for (const part of ['.inspector-heading', '.inspector-actions']) {
+    await inspector.locator(part).hover();
+    const partPageY = await page.evaluate(() => window.scrollY);
+    await wheel(page, 0, 600);
+    expect(await page.evaluate(() => window.scrollY)).toBe(partPageY);
+    await expect(page.locator('.zoom-controls > span')).toHaveText(scale!);
+  }
   await expect(
     inspector
       .locator('.inspector-heading')
@@ -501,6 +570,11 @@ test('right-click opens the site inspector and its expanded contents scroll with
   await expect(
     page.getByRole('menu', { name: 'Canvas actions' }),
   ).toBeVisible();
+  await page.getByRole('menu', { name: 'Canvas actions' }).hover();
+  const menuPageY = await page.evaluate(() => window.scrollY);
+  await wheel(page, 0, 600);
+  expect(await page.evaluate(() => window.scrollY)).toBe(menuPageY);
+  await expect(page.locator('.zoom-controls > span')).toHaveText(scale!);
 });
 
 test('persists dark mode and expands the visual editor', async ({ page }) => {
