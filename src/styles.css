@@ -529,6 +529,13 @@ h1 {
   overflow: hidden;
   background: var(--theme-surface, #fafcf6);
   touch-action: auto;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.canvas .inspector-anchor,
+.canvas .canvas-context-menu {
+  -webkit-user-select: text;
+  user-select: text;
 }
 .tool-pan {
   cursor: grab;

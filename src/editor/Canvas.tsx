@@ -79,10 +79,12 @@ type Gesture =
     };
 interface Props {
   doc: CircuitDocument;
-  selection: Selection;
+  inspection: Selection;
   selectedItems: SelectionItem[];
   onSelect: (selection: Selection) => void;
   onSelectMany: (items: SelectionItem[]) => void;
+  onInspect: (item: SelectionItem) => void;
+  onDismissInspector: () => void;
   onMove: (items: SelectionItem[], delta: Point) => void;
   onNode: (position: Point) => void;
   onWire: (from: string, to: string) => boolean;
@@ -99,10 +101,12 @@ const route = (from: Point, to: Point) =>
   `M${from.x},${from.y} H${(from.x + to.x) / 2} V${to.y} H${to.x}`;
 export function Canvas({
   doc,
-  selection,
+  inspection,
   selectedItems,
   onSelect,
   onSelectMany,
+  onInspect,
+  onDismissInspector,
   onMove,
   onNode,
   onWire,
@@ -280,6 +284,11 @@ export function Canvas({
     setContextMenu(false);
     onSelect(next);
   };
+  const inspect = (item: SelectionItem) => {
+    setContextPoint(null);
+    setContextMenu(false);
+    onInspect(item);
+  };
   const getNode = (id: string) => nodes.find((n) => n.id === id)!.position;
   const highlightedItems = marquee
     ? mergeSelection(
@@ -320,6 +329,7 @@ export function Canvas({
   };
   const beginPointer = (event: React.PointerEvent<SVGSVGElement>) => {
     if (event.button !== 0 && event.button !== 1) return;
+    onDismissInspector();
     setContextMenu(false);
     setContextPoint(null);
     const point = screen(event);
@@ -516,18 +526,18 @@ export function Canvas({
       : null;
   const previewEnd = previewTarget?.point ?? cursor;
   let anchor: Point | undefined;
-  if (selection?.kind === 'node')
-    anchor = nodes.find((n) => n.id === selection.id)?.position;
-  if (selection?.kind === 'component')
-    anchor = components.find((c) => c.id === selection.id)?.position;
-  if (selection?.kind === 'wire' || selection?.kind === 'lead') {
-    const w = doc.wires.find((w) => w.id === selection.id);
+  if (inspection?.kind === 'node')
+    anchor = nodes.find((n) => n.id === inspection.id)?.position;
+  if (inspection?.kind === 'component')
+    anchor = components.find((c) => c.id === inspection.id)?.position;
+  if (inspection?.kind === 'wire' || inspection?.kind === 'lead') {
+    const w = doc.wires.find((w) => w.id === inspection.id);
     if (w) {
       anchor = pathCenter(routes.get(w.id)!).point;
     }
   }
-  if (selection?.kind === 'lead' && !anchor) {
-    const [id, port] = selection.id.split('.');
+  if (inspection?.kind === 'lead' && !anchor) {
+    const [id, port] = inspection.id.split('.');
     const c = components.find((c) => c.id === id);
     if (c) {
       const a = getNode(c.nodes[Number(port)]);
@@ -644,7 +654,7 @@ export function Canvas({
             '[data-kind][data-id]',
           );
           if (target) {
-            onSelect({
+            onInspect({
               kind: target.getAttribute(
                 'data-kind',
               ) as NonNullable<Selection>['kind'],
@@ -758,9 +768,10 @@ export function Canvas({
                   aria-label={
                     w.implicit ? `Inspect branch ${w.id}` : `Wire ${w.id}`
                   }
+                  aria-description="Right-click or press Enter to inspect"
                   tabIndex={0}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') select({ kind, id: w.id });
+                    if (e.key === 'Enter') inspect({ kind, id: w.id });
                   }}
                 >
                   <path className="wire-hit" d={pathData(path)} />
@@ -803,9 +814,10 @@ export function Canvas({
                 aria-pressed={selected('component', c.id)}
                 tabIndex={0}
                 aria-label={`Inspect ${c.id}`}
+                aria-description="Right-click or press Enter to inspect"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter')
-                    select({ kind: 'component', id: c.id });
+                    inspect({ kind: 'component', id: c.id });
                 }}
               >
                 <rect
@@ -875,9 +887,10 @@ export function Canvas({
                   !!(n.terminal && selected('component', n.terminal.component))
                 }
                 aria-label={`Inspect node ${n.id}`}
+                aria-description="Right-click or press Enter to inspect"
                 tabIndex={0}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') select({ kind: 'node', id: n.id });
+                  if (e.key === 'Enter') inspect({ kind: 'node', id: n.id });
                 }}
               >
                 <circle className="node-hit" r="14" />

@@ -93,10 +93,14 @@ export default function App() {
     [selectionItems, doc],
   );
   const selection = selectedItems.length === 1 ? selectedItems[0] : null;
-  const setSelection = useCallback(
-    (next: Selection) => setSelectionItems(next ? [next] : []),
-    [],
-  );
+  const [inspectedItem, setInspectedItem] = useState<Selection>(null);
+  const inspection =
+    inspectedItem && selectionExists(doc, inspectedItem) ? inspectedItem : null;
+  const dismissInspector = useCallback(() => setInspectedItem(null), []);
+  const setSelection = useCallback((next: Selection) => {
+    setSelectionItems(next ? [next] : []);
+    setInspectedItem(null);
+  }, []);
   const [probe, setProbe] = useState<Probe>({
     quantity: 'voltage',
     target: doc.nodes.some((n) => n.id === 'R1.N')
@@ -366,6 +370,7 @@ export default function App() {
   };
   const selectMany = useCallback((items: SelectionItem[]) => {
     setSelectionItems(items);
+    setInspectedItem(null);
     const next = items.length === 1 ? items[0] : null;
     if (next)
       setProbe({
@@ -373,6 +378,10 @@ export default function App() {
         target: next.id,
       });
   }, []);
+  const inspect = (item: SelectionItem) => {
+    select(item);
+    setInspectedItem(item);
+  };
   const loadExample = (key: keyof typeof examples) => {
     change(examples[key]);
     setSelection(null);
@@ -735,10 +744,12 @@ export default function App() {
               <Canvas
                 key={layoutEpoch}
                 doc={doc}
-                selection={selection}
+                inspection={inspection}
                 selectedItems={selectedItems}
                 onSelect={select}
                 onSelectMany={selectMany}
+                onInspect={inspect}
+                onDismissInspector={dismissInspector}
                 onMove={move}
                 onNode={addNode}
                 onWire={addWire}
@@ -761,16 +772,16 @@ export default function App() {
                 stale={stale}
                 disabled={disabled}
                 inspector={
-                  selection && (
+                  inspection && (
                     <Inspector
-                      key={`${selection.kind}-${selection.id}`}
+                      key={`${inspection.kind}-${inspection.id}`}
                       doc={doc}
-                      selection={selection}
+                      selection={inspection}
                       sample={sample}
                       stale={stale}
                       disabled={disabled}
                       onChange={commit}
-                      onClose={() => setSelection(null)}
+                      onClose={dismissInspector}
                       onProbe={setProbe}
                     />
                   )
@@ -1088,10 +1099,11 @@ export default function App() {
             Crossings only connect at explicit junctions.
           </p>
           <p>
-            Click or right-click an object to inspect it. Right-click empty
-            space to add a standalone junction. Drag with the middle mouse
-            button or use <strong>Pan</strong> to move the view from anywhere.
-            Rotate is also at the top; long popup contents scroll. Use{' '}
+            Left-click selects an object. Right-click an object to open its
+            inspector, or focus it and press Enter. Right-click empty space to
+            add a standalone junction. Drag with the middle mouse button or use{' '}
+            <strong>Pan</strong> to move the view from anywhere. Rotate is also
+            at the top; long popup contents scroll. Use{' '}
             <strong>Expand editor</strong> for more canvas space.
           </p>
           <h3>Circuit description language</h3>

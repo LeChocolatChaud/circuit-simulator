@@ -48,7 +48,9 @@ test.beforeEach(async ({ page }) => {
 test('inspects element power, node voltage, and branch current', async ({
   page,
 }) => {
-  await page.getByRole('button', { name: 'Inspect R1', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Inspect R1', exact: true })
+    .click({ button: 'right' });
   const popup = page.getByRole('complementary', {
     name: 'Measurement inspector',
   });
@@ -58,20 +60,110 @@ test('inspects element power, node voltage, and branch current', async ({
   await page.getByRole('button', { name: 'Close inspector' }).click();
   await page
     .getByRole('button', { name: 'Inspect node R1.N', exact: true })
-    .click();
+    .click({ button: 'right' });
   await expect(popup).toContainText('4 V');
   await page.getByRole('button', { name: 'Close inspector' }).click();
   await page
     .getByRole('button', { name: 'Wire W1', exact: true })
     .locator('.wire-pick-target')
-    .click();
+    .click({ button: 'right' });
   await expect(popup).toContainText('-4 mA');
+});
+
+test('left-click selects without opening inspectors, while right-click and Enter open them explicitly', async ({
+  page,
+}) => {
+  const popup = page.getByRole('complementary', {
+    name: 'Measurement inspector',
+  });
+  for (const item of [
+    { name: 'Inspect R1', id: 'R1', part: '.component-hit' },
+    { name: 'Inspect node R1.N', id: 'R1.N', part: '.node-dot' },
+    { name: 'Wire W1', id: 'W1', part: '.wire-pick-target' },
+  ]) {
+    const object = page.getByRole('button', { name: item.name, exact: true });
+    await object.locator(item.part).click();
+    await expect(object).toHaveAttribute('aria-pressed', 'true');
+    await expect(popup).toHaveCount(0);
+    await object.locator(item.part).click({ button: 'right' });
+    await expect(popup).toBeVisible();
+    await expect(
+      popup.getByRole('heading', { name: item.id, exact: true }),
+    ).toBeVisible();
+    await page.getByRole('button', { name: 'Close inspector' }).click();
+    await expect(object).toHaveAttribute('aria-pressed', 'true');
+    await expect(popup).toHaveCount(0);
+    await object.locator(item.part).click();
+    await expect(popup).toHaveCount(0);
+  }
+  const component = page.getByRole('button', {
+    name: 'Inspect R1',
+    exact: true,
+  });
+  await component.focus();
+  await component.press('Enter');
+  await expect(popup).toBeVisible();
+  await page
+    .getByRole('button', { name: 'Inspect V1', exact: true })
+    .locator('.component-hit')
+    .click();
+  await expect(popup).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Inspect V1', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('disables canvas text selection while retaining selectable popup text and form fields', async ({
+  page,
+}) => {
+  const component = page.getByRole('button', {
+    name: 'Inspect R1',
+    exact: true,
+  });
+  const canvasLabel = component.locator('.component-id');
+  expect(
+    await canvasLabel.evaluate(
+      (element) => getComputedStyle(element).userSelect,
+    ),
+  ).toBe('none');
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  const label = await canvasLabel.boundingBox();
+  await dragBetween(
+    page,
+    { x: label!.x + 1, y: label!.y + label!.height / 2 },
+    { x: label!.x + label!.width - 1, y: label!.y + label!.height / 2 },
+  );
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('');
+  await component.locator('.component-hit').click({ button: 'right' });
+  const popup = page.getByRole('complementary', {
+    name: 'Measurement inspector',
+  });
+  const title = popup.locator('.inspector-heading .eyebrow');
+  expect(
+    await title.evaluate((element) => getComputedStyle(element).userSelect),
+  ).toBe('text');
+  await title.dblclick();
+  await expect
+    .poll(() => page.evaluate(() => window.getSelection()?.toString()))
+    .toMatch(/resistor/i);
+  await expect(popup).toBeVisible();
+  const field = popup.getByRole('textbox', { name: 'resistance', exact: true });
+  await field.focus();
+  await field.press('Control+a');
+  expect(
+    await field.evaluate((element: HTMLInputElement) => [
+      element.selectionStart,
+      element.selectionEnd,
+    ]),
+  ).toEqual([0, (await field.inputValue()).length]);
 });
 
 test('edits values, labels, and reference; keeps measurements stale until rerun', async ({
   page,
 }) => {
-  await page.getByRole('button', { name: 'Inspect R1', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Inspect R1', exact: true })
+    .click({ button: 'right' });
   await page
     .getByRole('textbox', { name: 'resistance', exact: true })
     .fill('1kOhm');
@@ -100,7 +192,7 @@ test('edits values, labels, and reference; keeps measurements stale until rerun'
   await page.getByRole('button', { name: 'Close inspector' }).click();
   await page
     .getByRole('button', { name: 'Inspect node V1.P', exact: true })
-    .click();
+    .click({ button: 'right' });
   await page.getByRole('button', { name: 'Set as reference' }).click();
   await page
     .getByRole('button', { name: 'Run analysis', exact: false })
@@ -109,7 +201,7 @@ test('edits values, labels, and reference; keeps measurements stale until rerun'
   await page.getByRole('button', { name: 'Close inspector' }).click();
   await page
     .getByRole('button', { name: 'Inspect node R1.N', exact: true })
-    .click();
+    .click({ button: 'right' });
   await expect(
     page.getByRole('complementary', { name: 'Measurement inspector' }),
   ).toContainText('-6 V');
@@ -148,7 +240,7 @@ test('runs transient analysis and updates the time cursor and inspector', async 
   await page.getByRole('slider', { name: 'Time cursor' }).fill('100');
   await page
     .getByRole('button', { name: 'Inspect node R1.N', exact: true })
-    .click();
+    .click({ button: 'right' });
   await expect(
     page.getByRole('complementary', { name: 'Measurement inspector' }),
   ).toContainText('3.151 V');
@@ -160,7 +252,7 @@ test('pins labels, saves locally, exports and imports versioned projects', async
 }) => {
   await page
     .getByRole('button', { name: 'Inspect node R1.N', exact: true })
-    .click();
+    .click({ button: 'right' });
   const pin = page.getByRole('textbox', { name: 'Pinned measurement label' });
   await pin.fill('Measured output');
   await pin.press('Enter');
@@ -199,7 +291,9 @@ test('adds and connects components and arranges the schematic', async ({
   await expect(
     page.getByRole('button', { name: 'Inspect R3', exact: true }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Close inspector' }).click();
+  await expect(
+    page.getByRole('complementary', { name: 'Measurement inspector' }),
+  ).toHaveCount(0);
   await dragBetween(
     page,
     await nodePoint(page, 'R3.P'),
@@ -208,14 +302,16 @@ test('adds and connects components and arranges the schematic', async ({
   await expect(
     page.getByRole('textbox', { name: 'Circuit description' }),
   ).toHaveValue(/wire W4 R3.P V1.P/);
-  await page.getByRole('button', { name: 'Close inspector' }).click();
+  await expect(
+    page.getByRole('complementary', { name: 'Measurement inspector' }),
+  ).toHaveCount(0);
   await page.getByRole('button', { name: 'Arrange', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Arrange', exact: true }),
   ).toBeEnabled({ timeout: 15000 });
   await expect(
     page.getByRole('textbox', { name: 'Circuit description' }),
-  ).toHaveValue(/# Click an element/);
+  ).toHaveValue(/# Right-click an element/);
   await expect(
     page.getByRole('textbox', { name: 'Circuit description' }),
   ).toHaveValue(/resistor R3.*rotate=/);
@@ -241,7 +337,9 @@ test('reports floating voltages without treating zero current as unknown', async
   await expect(page.getByLabel('Circuit diagnostics')).toContainText(
     'Indeterminate node voltage',
   );
-  await page.getByRole('button', { name: 'Inspect R2', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Inspect R2', exact: true })
+    .click({ button: 'right' });
   await expect(
     page.getByRole('complementary', { name: 'Measurement inspector' }),
   ).toContainText('0 A');
@@ -295,10 +393,19 @@ test('moves and rotates a component and avoids terminal-name collisions after de
   );
   await page.mouse.up();
   await expect(editor).not.toHaveValue(before);
+  await expect(
+    page.getByRole('complementary', { name: 'Measurement inspector' }),
+  ).toHaveCount(0);
+  await page
+    .getByRole('button', { name: 'Inspect R1', exact: true })
+    .click({ button: 'right' });
   await page.getByRole('button', { name: 'Rotate', exact: true }).click();
   await expect(editor).toHaveValue(/resistor R1.*rotate=90/);
   await page.getByRole('button', { name: 'Close inspector' }).click();
   await page.getByRole('button', { name: 'Add Resistor', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Inspect R3', exact: true })
+    .click({ button: 'right' });
   await page.getByRole('button', { name: 'Delete', exact: true }).click();
   await page.getByRole('button', { name: 'Add Resistor', exact: true }).click();
   await expect(
@@ -436,7 +543,9 @@ test('new elements have permanent endpoint nodes and context inspection after ro
   await page
     .getByRole('button', { name: 'Rotate element', exact: true })
     .click();
-  await page.getByRole('button', { name: 'Close inspector' }).click();
+  await expect(
+    page.getByRole('complementary', { name: 'Measurement inspector' }),
+  ).toHaveCount(0);
   const centers = await page.evaluate(() => {
     const matrix = (selector: string) => {
       const element = document.querySelector(selector) as SVGGraphicsElement;
@@ -564,7 +673,6 @@ test('drops a node connection onto a wire, splits it at the hit point, and prese
   page,
 }) => {
   await page.getByRole('button', { name: 'Add Resistor', exact: true }).click();
-  await page.getByRole('button', { name: 'Close inspector' }).click();
   const editor = page.getByRole('textbox', { name: 'Circuit description' });
   const before = await editor.inputValue();
   const destination = await page
@@ -619,7 +727,9 @@ test('double-click rotates only in Select, and Escape or changing tools cancels 
       (c) => c.id === 'R1',
     )?.rotation,
   ).toBe(90);
-  await page.getByRole('button', { name: 'Close inspector' }).click();
+  await expect(
+    page.getByRole('complementary', { name: 'Measurement inspector' }),
+  ).toHaveCount(0);
   await page.keyboard.press('2');
   const rotated = await editor.inputValue();
   await page

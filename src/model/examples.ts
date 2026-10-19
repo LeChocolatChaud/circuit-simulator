@@ -1,5 +1,5 @@
 export const examples = {
-  divider: `# Click an element or its permanently attached P / N nodes.
+  divider: `# Right-click an element or its attached P / N nodes to inspect.
 circuit "Voltage divider"
 
 voltage_source V1 dc=12V at=(190,310) rotate=90 label="Supply"
