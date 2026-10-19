@@ -32,10 +32,16 @@ import { Canvas } from './editor/Canvas';
 import { Symbol } from './editor/Symbol';
 import { autoLayout } from './editor/layout';
 import { useHistory } from './editor/useHistory';
+import { selectionExists } from './editor/selection';
 import { Inspector, type Probe } from './inspection/Inspector';
 import { Waveform } from './inspection/Waveform';
 import { parse, quantity } from './language/parser';
-import { declaration, deleteSelection, setProperty } from './language/edit';
+import {
+  declaration,
+  deleteSelections,
+  moveSelections,
+  setProperty,
+} from './language/edit';
 import {
   connectNodes,
   continueWire,
@@ -49,6 +55,7 @@ import {
   type ComponentKind,
   type Point,
   type Selection,
+  type SelectionItem,
   type SimulationResult,
   type WorkerResponse,
 } from './model/types';
@@ -80,7 +87,16 @@ export default function App() {
   useEffect(() => {
     if (parsed.document) lastValid.current = parsed.document;
   }, [parsed.document]);
-  const [selection, setSelection] = useState<Selection>(null);
+  const [selectionItems, setSelectionItems] = useState<SelectionItem[]>([]);
+  const selectedItems = useMemo(
+    () => selectionItems.filter((item) => selectionExists(doc, item)),
+    [selectionItems, doc],
+  );
+  const selection = selectedItems.length === 1 ? selectedItems[0] : null;
+  const setSelection = useCallback(
+    (next: Selection) => setSelectionItems(next ? [next] : []),
+    [],
+  );
   const [probe, setProbe] = useState<Probe>({
     quantity: 'voltage',
     target: doc.nodes.some((n) => n.id === 'R1.N')
@@ -249,11 +265,11 @@ export default function App() {
       if (
         !typing &&
         (event.key === 'Backspace' || event.key === 'Delete') &&
-        selection &&
+        selectedItems.length > 0 &&
         !disabled
       ) {
         event.preventDefault();
-        commit(deleteSelection(doc, selection));
+        commit(deleteSelections(doc, selectedItems));
         setSelection(null);
       }
       if (event.key === 'Escape') {
@@ -264,7 +280,18 @@ export default function App() {
     };
     window.addEventListener('keydown', keyboard);
     return () => window.removeEventListener('keydown', keyboard);
-  }, [run, exportProject, redo, undo, selection, disabled, commit, doc, help]);
+  }, [
+    run,
+    exportProject,
+    redo,
+    undo,
+    selectedItems,
+    setSelection,
+    disabled,
+    commit,
+    doc,
+    help,
+  ]);
 
   const unique = (prefix: string, ports = 0) => {
     const ids = new Set(
@@ -332,22 +359,20 @@ export default function App() {
     commit(next);
     setSelection({ kind: 'component', id });
   };
-  const move = (selection: NonNullable<Selection>, point: Point) => {
-    const item =
-      selection.kind === 'node'
-        ? doc.nodes.find((n) => n.id === selection.id)
-        : doc.components.find((c) => c.id === selection.id);
-    if (item && !('terminal' in item && item.terminal))
-      commit(setProperty(source, item.line, 'at', `(${point.x},${point.y})`));
-  };
+  const move = (items: SelectionItem[], delta: Point) =>
+    commit(moveSelections(doc, items, delta));
   const select = (next: Selection) => {
-    setSelection(next);
+    selectMany(next ? [next] : []);
+  };
+  const selectMany = useCallback((items: SelectionItem[]) => {
+    setSelectionItems(items);
+    const next = items.length === 1 ? items[0] : null;
     if (next)
       setProbe({
         quantity: next.kind === 'node' ? 'voltage' : 'current',
         target: next.id,
       });
-  };
+  }, []);
   const loadExample = (key: keyof typeof examples) => {
     change(examples[key]);
     setSelection(null);
@@ -711,7 +736,9 @@ export default function App() {
                 key={layoutEpoch}
                 doc={doc}
                 selection={selection}
+                selectedItems={selectedItems}
                 onSelect={select}
+                onSelectMany={selectMany}
                 onMove={move}
                 onNode={addNode}
                 onWire={addWire}
@@ -1051,17 +1078,21 @@ export default function App() {
           <p>
             Add components from the library. With <strong>Select</strong>, drag
             elements to move them, double-click to rotate, and drag empty space
-            to pan. P/N nodes stay permanently attached to each element. Drag
-            from a node to another node to connect them, or to a wire to insert
-            a connected junction. Release in empty space to keep drawing; each
-            empty-space click adds an intermediate junction and continues the
-            wire. Crossings only connect at explicit junctions.
+            to box-select fully enclosed symbols, junctions, and wires. Hold
+            Shift to extend the selection or toggle objects. Drag a selected
+            element to move the group; Delete removes the selection. P/N nodes
+            stay permanently attached to each element. Drag from a node to
+            another node to connect them, or to a wire to insert a connected
+            junction. Release in empty space to keep drawing; each empty-space
+            click adds an intermediate junction and continues the wire.
+            Crossings only connect at explicit junctions.
           </p>
           <p>
             Click or right-click an object to inspect it. Right-click empty
-            space to add a standalone junction. <strong>Pan</strong> drags the
-            view from anywhere. Rotate is also at the top; long popup contents
-            scroll. Use <strong>Expand editor</strong> for more canvas space.
+            space to add a standalone junction. Drag with the middle mouse
+            button or use <strong>Pan</strong> to move the view from anywhere.
+            Rotate is also at the top; long popup contents scroll. Use{' '}
+            <strong>Expand editor</strong> for more canvas space.
           </p>
           <h3>Circuit description language</h3>
           <pre>{`circuit "My circuit"\nvoltage_source V1 dc=5V\nresistor R1 resistance=1kOhm\ncapacitor C1 capacitance=10uF\nwire W1 V1.P R1.P\nwire W2 R1.N C1.P\nwire W3 C1.N V1.N\nreference V1.N\nlabel voltage(C1.P) "Vout"\nanalysis transient stop=50ms step=100us`}</pre>
@@ -1095,6 +1126,8 @@ export default function App() {
           <div className="shortcut-grid">
             <span>Select / Pan</span>
             <kbd>1 / 2</kbd>
+            <span>Select all outside text fields</span>
+            <kbd>Ctrl / ⌘ + A</kbd>
             <span>Run analysis</span>
             <kbd>Ctrl / ⌘ + Enter</kbd>
             <span>Export project</span>

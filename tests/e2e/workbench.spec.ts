@@ -28,6 +28,18 @@ async function dragBetween(
   await page.mouse.up();
 }
 
+const bulkSource = `circuit "Bulk selection"
+resistor R1 resistance=1kOhm at=(200,200)
+resistor R2 resistance=2kOhm at=(400,200)
+resistor R3 resistance=3kOhm at=(650,400)
+node tap at=(300,200)
+wire W1 R1.N tap
+wire W2 tap R2.P
+wire W3 R2.N R3.P
+reference R3.N
+label current(R1) "Branch current"
+`;
+
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('status')).toHaveText('Solution ready');
@@ -449,7 +461,7 @@ test('new elements have permanent endpoint nodes and context inspection after ro
   ).toContainText('R3.P');
 });
 
-test('has only Select/Pan tools, uses 1/2 shortcuts, and pans empty canvas without editing', async ({
+test('has only Select/Pan tools, uses 1/2 shortcuts, and box-selects empty canvas without panning', async ({
   page,
 }) => {
   const tools = page.locator('[aria-label="Schematic tools"]');
@@ -467,7 +479,7 @@ test('has only Select/Pan tools, uses 1/2 shortcuts, and pans empty canvas witho
     { x: svg!.x + 20, y: svg!.y + 20 },
     { x: svg!.x + 100, y: svg!.y + 80 },
   );
-  await expect(scene).not.toHaveAttribute('transform', before!);
+  await expect(scene).toHaveAttribute('transform', before!);
   await expect(editor).toHaveValue(source);
   await page.keyboard.press('2');
   await expect(
@@ -627,4 +639,173 @@ test('double-click rotates only in Select, and Escape or changing tools cancels 
   await expect(page.getByLabel('Wire in progress')).toHaveCount(0);
   await expect(editor).toHaveValue(rotated);
   expect(rotated).not.toBe(original);
+});
+
+test('box-selects a group at zoom, moves it with attached terminals, and deletes with atomic undo', async ({
+  page,
+}) => {
+  const editor = page.getByRole('textbox', { name: 'Circuit description' });
+  await editor.fill(bulkSource);
+  await editor.blur();
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  const scene = page.locator('.schematic > g');
+  const beforeView = await scene.getAttribute('transform');
+  const start = await worldPoint(page, { x: 120, y: 120 });
+  const end = await worldPoint(page, { x: 480, y: 280 });
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 10 });
+  await expect(page.getByLabel('Selection box')).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Inspect R1', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    page.getByRole('button', { name: 'Inspect R2', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    page.getByRole('button', { name: 'Inspect R3', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'false');
+  await page.mouse.up();
+  await expect(page.getByLabel('Selection box')).toHaveCount(0);
+  await expect(page.locator('.canvas-caption')).toContainText('5 selected');
+  await expect(scene).toHaveAttribute('transform', beforeView!);
+  await expect(editor).toHaveValue(bulkSource);
+  await expect(
+    page.getByRole('complementary', { name: 'Measurement inspector' }),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: '/tmp/circuit-studio-selection.png',
+    fullPage: true,
+  });
+
+  await dragBetween(
+    page,
+    await worldPoint(page, { x: 200, y: 200 }),
+    await worldPoint(page, { x: 240, y: 230 }),
+  );
+  const moved = parse(await editor.inputValue()).document!;
+  expect(moved.components.map((c) => c.position)).toEqual([
+    { x: 240, y: 230 },
+    { x: 440, y: 230 },
+    { x: 650, y: 400 },
+  ]);
+  expect(moved.nodes.find((n) => n.id === 'tap')?.position).toEqual({
+    x: 340,
+    y: 230,
+  });
+  expect(moved.nodes.find((n) => n.id === 'R1.N')?.position).toEqual({
+    x: 288,
+    y: 230,
+  });
+  expect(moved.wires.map((w) => [w.from, w.to])).toEqual([
+    ['R1.N', 'tap'],
+    ['tap', 'R2.P'],
+    ['R2.N', 'R3.P'],
+  ]);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(editor).toHaveValue(bulkSource);
+  await page.keyboard.press('Delete');
+  const deleted = parse(await editor.inputValue()).document!;
+  expect(deleted.components.map((c) => c.id)).toEqual(['R3']);
+  expect(deleted.wires).toEqual([]);
+  expect(deleted.nodes.some((n) => n.id === 'tap')).toBe(false);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(editor).toHaveValue(bulkSource);
+});
+
+test('selects all with Ctrl or Command+A, preserves selection while middle-panning, and keeps text selection native', async ({
+  page,
+}) => {
+  const editor = page.getByRole('textbox', { name: 'Circuit description' });
+  const original = await editor.inputValue();
+  await page.keyboard.press('Control+a');
+  await expect(page.locator('.component[aria-pressed="true"]')).toHaveCount(3);
+  await expect(page.locator('.circuit-node[aria-pressed="true"]')).toHaveCount(
+    6,
+  );
+  await expect(page.locator('.circuit-wire[aria-pressed="true"]')).toHaveCount(
+    3,
+  );
+  const scene = page.locator('.schematic > g');
+  const before = await scene.getAttribute('transform');
+  const center = await worldPoint(page, { x: 395, y: 165 });
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(center.x + 40, center.y + 25, { steps: 10 });
+  await page.mouse.up({ button: 'middle' });
+  await expect(scene).not.toHaveAttribute('transform', before!);
+  await expect(page.locator('.component[aria-pressed="true"]')).toHaveCount(3);
+  await expect(editor).toHaveValue(original);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.component[aria-pressed="true"]')).toHaveCount(0);
+  await page.keyboard.press('Meta+a');
+  await expect(page.locator('.component[aria-pressed="true"]')).toHaveCount(3);
+  await page.keyboard.press('Escape');
+
+  await editor.focus();
+  await editor.press('Control+a');
+  expect(
+    await editor.evaluate((element: HTMLTextAreaElement) => [
+      element.selectionStart,
+      element.selectionEnd,
+    ]),
+  ).toEqual([0, original.length]);
+  await expect(page.locator('.component[aria-pressed="true"]')).toHaveCount(0);
+  await editor.blur();
+  await page.getByRole('button', { name: 'Open guide', exact: true }).click();
+  await page.keyboard.press('Control+a');
+  await expect(page.locator('.component[aria-pressed="true"]')).toHaveCount(0);
+});
+
+test('extends a box selection with Shift and cancels a new selection rectangle with Escape', async ({
+  page,
+}) => {
+  const editor = page.getByRole('textbox', { name: 'Circuit description' });
+  await editor.fill(bulkSource);
+  await editor.blur();
+  await dragBetween(
+    page,
+    await worldPoint(page, { x: 480, y: 280 }),
+    await worldPoint(page, { x: 120, y: 120 }),
+  );
+  await expect(page.locator('.component[aria-pressed="true"]')).toHaveCount(2);
+  await page.keyboard.down('Shift');
+  await dragBetween(
+    page,
+    await worldPoint(page, { x: 570, y: 320 }),
+    await worldPoint(page, { x: 730, y: 480 }),
+  );
+  await page.keyboard.up('Shift');
+  await expect(page.locator('.component[aria-pressed="true"]')).toHaveCount(3);
+  await page.keyboard.down('Shift');
+  await page
+    .getByRole('button', { name: 'Inspect R1', exact: true })
+    .locator('.component-hit')
+    .click();
+  await page.keyboard.up('Shift');
+  await expect(
+    page.getByRole('button', { name: 'Inspect R1', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.down('Shift');
+  const terminal = await nodePoint(page, 'R1.N');
+  await page.mouse.click(terminal.x, terminal.y);
+  await expect(
+    page.getByRole('button', { name: 'Inspect R1', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await page.mouse.click(terminal.x, terminal.y);
+  await expect(
+    page.getByRole('button', { name: 'Inspect R1', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.up('Shift');
+  const start = await worldPoint(page, { x: 120, y: 120 });
+  const end = await worldPoint(page, { x: 480, y: 280 });
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 10 });
+  await expect(page.getByLabel('Selection box')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  await expect(page.getByLabel('Selection box')).toHaveCount(0);
+  await expect(page.locator('.component[aria-pressed="true"]')).toHaveCount(0);
+  await expect(editor).toHaveValue(bulkSource);
 });

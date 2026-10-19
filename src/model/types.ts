@@ -106,10 +106,11 @@ export interface SimulationRequest {
 export type WorkerResponse =
   | { type: 'result'; result: SimulationResult }
   | { type: 'progress'; revision: number; progress: number };
-export type Selection = {
+export type SelectionItem = {
   kind: 'node' | 'component' | 'wire' | 'lead';
   id: string;
-} | null;
+};
+export type Selection = SelectionItem | null;
 
 export const componentInfo: Record<
   ComponentKind,

@@ -1,4 +1,9 @@
-import type { CircuitDocument, Selection } from '../model/types';
+import type {
+  CircuitDocument,
+  Point,
+  Selection,
+  SelectionItem,
+} from '../model/types';
 import { splitComment } from './parser';
 
 export function replaceLine(
@@ -80,11 +85,24 @@ export function deleteSelection(
   doc: CircuitDocument,
   selection: Selection,
 ): string {
-  if (!selection || selection.kind === 'lead') return doc.source;
-  const removed = new Set<string>([selection.id]);
-  const selectedNode = doc.nodes.find((n) => n.id === selection.id);
-  if (selection.kind === 'node' && selectedNode?.terminal)
-    removed.add(selectedNode.terminal.component);
+  return deleteSelections(doc, selection ? [selection] : []);
+}
+
+export function deleteSelections(
+  doc: CircuitDocument,
+  selections: SelectionItem[],
+): string {
+  const removed = new Set(
+    selections.filter((item) => item.kind !== 'lead').map((item) => item.id),
+  );
+  if (!removed.size) return doc.source;
+  for (const item of selections) {
+    const node =
+      item.kind === 'node'
+        ? doc.nodes.find((n) => n.id === item.id)
+        : undefined;
+    if (node?.terminal) removed.add(node.terminal.component);
+  }
   let changed = true;
   while (changed) {
     changed = false;
@@ -141,6 +159,35 @@ export function deleteSelection(
         refLine + 1,
         next ? `reference ${next.id}` : '',
       );
+  }
+  return source;
+}
+
+/** A shared delta preserves relative positions and keeps the move one undo step. */
+export function moveSelections(
+  doc: CircuitDocument,
+  selections: SelectionItem[],
+  delta: Point,
+): string {
+  const components = new Set(
+    selections
+      .filter((item) => item.kind === 'component')
+      .map((item) => item.id),
+  );
+  const nodes = new Set(
+    selections.filter((item) => item.kind === 'node').map((item) => item.id),
+  );
+  let source = doc.source;
+  for (const item of [
+    ...doc.components.filter((c) => components.has(c.id)),
+    ...doc.nodes.filter((n) => !n.terminal && nodes.has(n.id)),
+  ]) {
+    source = setProperty(
+      source,
+      item.line,
+      'at',
+      `(${item.position.x + delta.x},${item.position.y + delta.y})`,
+    );
   }
   return source;
 }

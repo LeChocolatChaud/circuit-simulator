@@ -565,7 +565,15 @@ h1 {
   cursor: grab;
 }
 .tool-select {
-  cursor: grab;
+  cursor: crosshair;
+}
+.selection-marquee {
+  fill: #4c9d6f20;
+  stroke: var(--theme-accent, #27896f);
+  stroke-width: 1;
+  stroke-dasharray: 5 3;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
 }
 .connection-preview {
   pointer-events: none;

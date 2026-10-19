@@ -22,10 +22,12 @@ import {
   type Point,
   type Sample,
   type Selection,
+  type SelectionItem,
 } from '../model/types';
 import { Symbol } from './Symbol';
 import { format } from '../model/format';
 import { connectionTarget, type ConnectionTarget } from './hitTesting';
+import { allSelectable, mergeSelection, selectionInBox } from './selection';
 import {
   attachedNodes,
   pathCenter,
@@ -49,7 +51,15 @@ type Gesture =
       start: Point;
       worldStart: Point;
       origin: Point;
-      selection: NonNullable<Selection>;
+      items: SelectionItem[];
+      moved: boolean;
+    }
+  | {
+      kind: 'box';
+      pointerId: number;
+      start: Point;
+      worldStart: Point;
+      base: SelectionItem[];
       moved: boolean;
     }
   | {
@@ -70,8 +80,10 @@ type Gesture =
 interface Props {
   doc: CircuitDocument;
   selection: Selection;
+  selectedItems: SelectionItem[];
   onSelect: (selection: Selection) => void;
-  onMove: (selection: NonNullable<Selection>, position: Point) => void;
+  onSelectMany: (items: SelectionItem[]) => void;
+  onMove: (items: SelectionItem[], delta: Point) => void;
   onNode: (position: Point) => void;
   onWire: (from: string, to: string) => boolean;
   onWirePoint: (from: string, position: Point) => string | null;
@@ -88,7 +100,9 @@ const route = (from: Point, to: Point) =>
 export function Canvas({
   doc,
   selection,
+  selectedItems,
   onSelect,
+  onSelectMany,
   onMove,
   onNode,
   onWire,
@@ -114,10 +128,13 @@ export function Canvas({
     setWireStart(id);
   }, []);
   const [drag, setDrag] = useState<{
-    selection: NonNullable<Selection>;
-    origin: Point;
+    items: SelectionItem[];
+    delta: Point;
+  } | null>(null);
+  const [marquee, setMarquee] = useState<{
     start: Point;
-    current: Point;
+    end: Point;
+    base: SelectionItem[];
   } | null>(null);
   const [pan, setPan] = useState<{ start: Point; x: number; y: number } | null>(
     null,
@@ -133,6 +150,7 @@ export function Canvas({
     setDrawing(null);
     setDrag(null);
     setPan(null);
+    setMarquee(null);
     setPressed(false);
   }, [setDrawing]);
   useEffect(() => {
@@ -145,14 +163,24 @@ export function Canvas({
       }
       const target = event.target;
       if (
-        event.ctrlKey ||
-        event.metaKey ||
-        event.altKey ||
-        event.shiftKey ||
         document.querySelector('dialog[open]') ||
         (target instanceof Element &&
           target.closest('input, textarea, select, [contenteditable="true"]'))
       )
+        return;
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === 'a'
+      ) {
+        event.preventDefault();
+        cancelInteraction();
+        setContextMenu(false);
+        onSelectMany(allSelectable(doc));
+        return;
+      }
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey)
         return;
       if (event.key === '1' || event.key === '2') {
         event.preventDefault();
@@ -167,7 +195,7 @@ export function Canvas({
       window.removeEventListener('keydown', keyboard);
       window.removeEventListener('blur', cancelInteraction);
     };
-  }, [cancelInteraction]);
+  }, [cancelInteraction, doc, onSelectMany]);
   useEffect(() => {
     if (disabled || (wireStart && !doc.nodes.some((n) => n.id === wireStart)))
       cancelInteraction();
@@ -229,8 +257,8 @@ export function Canvas({
   });
   const geometry = useMemo(() => {
     const moved = (kind: 'node' | 'component', id: string, point: Point) =>
-      drag?.selection.kind === kind && drag.selection.id === id
-        ? drag.current
+      drag?.items.some((item) => item.kind === kind && item.id === id)
+        ? { x: point.x + drag.delta.x, y: point.y + drag.delta.y }
         : point;
     const components = doc.components.map((c) => ({
       ...c,
@@ -253,8 +281,14 @@ export function Canvas({
     onSelect(next);
   };
   const getNode = (id: string) => nodes.find((n) => n.id === id)!.position;
+  const highlightedItems = marquee
+    ? mergeSelection(
+        marquee.base,
+        selectionInBox(doc, routes, marquee.start, marquee.end),
+      )
+    : selectedItems;
   const selected = (kind: string, id: string) =>
-    selection?.kind === kind && selection.id === id;
+    highlightedItems.some((item) => item.kind === kind && item.id === id);
   const targetAt = (event: {
     clientX: number;
     clientY: number;
@@ -293,7 +327,6 @@ export function Canvas({
     const base = { pointerId: event.pointerId, start: point, moved: false };
     if (event.button === 1 || tool === 'pan') {
       event.preventDefault();
-      onSelect(null);
       gesture.current = {
         ...base,
         kind: 'pan',
@@ -303,6 +336,29 @@ export function Canvas({
     } else if (drawing.current && target?.kind !== 'component') {
       gesture.current = { ...base, kind: 'drawing' };
       onSelect(null);
+    } else if (event.shiftKey && target) {
+      const wire =
+        target.kind === 'wire'
+          ? doc.wires.find((w) => w.id === target.id)
+          : undefined;
+      const parent =
+        target.kind === 'node'
+          ? nodes.find((n) => n.id === target.id)?.terminal?.component
+          : wire?.implicit
+            ? wire.id.split('.')[0]
+            : undefined;
+      const item: SelectionItem = parent
+        ? { kind: 'component', id: parent }
+        : { kind: target.kind, id: target.id };
+      onSelectMany(
+        selected(item.kind, item.id)
+          ? selectedItems.filter(
+              (other) => other.kind !== item.kind || other.id !== item.id,
+            )
+          : mergeSelection(selectedItems, [item]),
+      );
+      event.preventDefault();
+      return;
     } else if (target?.kind === 'node') {
       if (disabled) {
         select({ kind: 'node', id: target.id });
@@ -314,22 +370,24 @@ export function Canvas({
       setCursor(target.point);
     } else if (target?.kind === 'component') {
       setDrawing(null);
-      select({ kind: 'component', id: target.id });
+      const items = selectedItems.some(
+        (item) => item.kind === 'component' && item.id === target.id,
+      )
+        ? selectedItems
+        : [{ kind: 'component' as const, id: target.id }];
+      onSelectMany(items);
       if (disabled) return;
       const c = components.find((c) => c.id === target.id)!;
-      const item = { kind: 'component' as const, id: c.id };
       gesture.current = {
         ...base,
         kind: 'move',
-        selection: item,
+        items,
         origin: c.position,
         worldStart: world(point),
       };
       setDrag({
-        selection: item,
-        origin: c.position,
-        start: world(point),
-        current: c.position,
+        items,
+        delta: { x: 0, y: 0 },
       });
     } else if (target?.kind === 'wire') {
       const w = doc.wires.find((w) => w.id === target.id)!;
@@ -341,25 +399,30 @@ export function Canvas({
       select(item);
     } else {
       event.preventDefault();
-      select(null);
+      const baseItems = event.shiftKey ? selectedItems : [];
+      onSelectMany(baseItems);
       gesture.current = {
         ...base,
-        kind: 'pan',
-        origin: { x: view.x, y: view.y },
+        kind: 'box',
+        worldStart: world(point),
+        base: baseItems,
       };
-      setPan({ start: point, x: view.x, y: view.y });
     }
     setPressed(true);
     container.current?.setPointerCapture(event.pointerId);
   };
-  const movedPosition = (
+  const movedDelta = (
     g: Extract<Gesture, { kind: 'move' }>,
     point: Point,
   ): Point => {
     const pos = world(point);
     return {
-      x: Math.round((g.origin.x + pos.x - g.worldStart.x) / 10) * 10,
-      y: Math.round((g.origin.y + pos.y - g.worldStart.y) / 10) * 10,
+      x:
+        Math.round((g.origin.x + pos.x - g.worldStart.x) / 10) * 10 -
+        g.origin.x,
+      y:
+        Math.round((g.origin.y + pos.y - g.worldStart.y) / 10) * 10 -
+        g.origin.y,
     };
   };
   const finishConnection = (
@@ -407,10 +470,18 @@ export function Canvas({
     setPressed(false);
     setDrag(null);
     setPan(null);
+    setMarquee(null);
     if (g.kind === 'move') {
-      const position = movedPosition(g, point);
-      if (moved && (position.x !== g.origin.x || position.y !== g.origin.y))
-        onMove(g.selection, position);
+      const delta = movedDelta(g, point);
+      if (moved && (delta.x !== 0 || delta.y !== 0)) onMove(g.items, delta);
+    } else if (g.kind === 'box') {
+      if (moved)
+        onSelectMany(
+          mergeSelection(
+            g.base,
+            selectionInBox(doc, routes, g.worldStart, world(point)),
+          ),
+        );
     } else if (g.kind === 'node') {
       if (moved) finishConnection(event, false);
       else {
@@ -518,7 +589,9 @@ export function Canvas({
             ? `From ${wireStart} · click a node or wire to finish, empty space for a junction`
             : tool === 'pan'
               ? 'PAN · drag anywhere'
-              : 'SELECT · drag nodes to wire · drag empty canvas to pan'}
+              : selectedItems.length > 1
+                ? `${selectedItems.length} selected · drag a selected element to move · Delete to remove`
+                : 'SELECT · drag empty canvas to box-select · middle-drag to pan'}
         </span>
         <div className="tool-group zoom-controls">
           <button
@@ -548,6 +621,7 @@ export function Canvas({
           if (
             tool !== 'select' ||
             disabled ||
+            event.shiftKey ||
             (event.target as Element).closest(
               '.inspector-anchor, .canvas-context-menu',
             )
@@ -601,10 +675,14 @@ export function Canvas({
             g.moved = true;
           if (g.kind === 'move' && g.moved)
             setDrag({
-              selection: g.selection,
-              origin: g.origin,
+              items: g.items,
+              delta: movedDelta(g, point),
+            });
+          if (g.kind === 'box' && g.moved)
+            setMarquee({
               start: g.worldStart,
-              current: movedPosition(g, point),
+              end: world(point),
+              base: g.base,
             });
           if (g.kind === 'pan')
             setView((v) => ({
@@ -662,7 +740,9 @@ export function Canvas({
               const path = routes.get(w.id)!;
               const { point: mid, horizontal, direction } = pathCenter(path);
               const kind = w.implicit ? 'lead' : 'wire';
-              const isSelected = selected(kind, w.id);
+              const isSelected =
+                selected(kind, w.id) ||
+                (w.implicit && selected('component', w.id.split('.')[0]));
               const isTarget =
                 previewTarget?.kind === 'wire' && previewTarget.id === w.id;
               const current = sample?.wireCurrents[w.id];
@@ -674,6 +754,7 @@ export function Canvas({
                   data-id={w.id}
                   className={`circuit-wire ${isSelected ? 'selected' : ''} ${isTarget ? 'connection-target' : ''}`}
                   role="button"
+                  aria-pressed={!!isSelected}
                   aria-label={
                     w.implicit ? `Inspect branch ${w.id}` : `Wire ${w.id}`
                   }
@@ -719,6 +800,7 @@ export function Canvas({
                 className={`component ${selected('component', c.id) ? 'selected' : ''}`}
                 transform={`translate(${c.position.x} ${c.position.y})`}
                 role="button"
+                aria-pressed={selected('component', c.id)}
                 tabIndex={0}
                 aria-label={`Inspect ${c.id}`}
                 onKeyDown={(e) => {
@@ -785,9 +867,13 @@ export function Canvas({
                 key={n.id}
                 data-kind="node"
                 data-id={n.id}
-                className={`circuit-node ${n.terminal ? 'terminal-node' : ''} ${selected('node', n.id) || wireStart === n.id || (previewTarget?.kind === 'node' && previewTarget.id === n.id) ? 'selected' : ''}`}
+                className={`circuit-node ${n.terminal ? 'terminal-node' : ''} ${selected('node', n.id) || (n.terminal && selected('component', n.terminal.component)) || wireStart === n.id || (previewTarget?.kind === 'node' && previewTarget.id === n.id) ? 'selected' : ''}`}
                 transform={`translate(${n.position.x} ${n.position.y})`}
                 role="button"
+                aria-pressed={
+                  selected('node', n.id) ||
+                  !!(n.terminal && selected('component', n.terminal.component))
+                }
                 aria-label={`Inspect node ${n.id}`}
                 tabIndex={0}
                 onKeyDown={(e) => {
@@ -891,6 +977,16 @@ export function Canvas({
                   />
                 </g>
               )}
+            {marquee && (
+              <rect
+                className="selection-marquee"
+                aria-label="Selection box"
+                x={Math.min(marquee.start.x, marquee.end.x)}
+                y={Math.min(marquee.start.y, marquee.end.y)}
+                width={Math.abs(marquee.end.x - marquee.start.x)}
+                height={Math.abs(marquee.end.y - marquee.start.y)}
+              />
+            )}
           </g>
         </svg>
         {!doc.components.length && (
@@ -972,7 +1068,7 @@ export function Canvas({
           <span>
             {tool === 'pan'
               ? 'Drag anywhere to pan · 1: Select'
-              : 'Drag nodes to connect · Double-click elements to rotate'}
+              : 'Box-select · Ctrl/⌘+A: all · Middle-drag: pan'}
           </span>
         </div>
       </div>

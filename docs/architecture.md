@@ -14,7 +14,9 @@ The visual canvas has a resizable height and an expanded mode. Inspector headers
 
 ## Unified pointer interaction
 
-The toolbar has Select (`1`) and Pan (`2`). Select dispatches a pointer gesture from its starting target: blank canvas pans, a symbol moves, a node starts wiring, and a wire opens inspection. A small movement threshold distinguishes node clicks from wiring drags; double-click rotates symbols only in Select. Pan always moves the camera regardless of the underlying object. Input fields and open dialogs retain their ordinary digit-key behavior.
+The toolbar has Select (`1`) and Pan (`2`). Select dispatches a pointer gesture from its starting target: blank canvas draws a selection rectangle, a symbol moves, a node starts wiring, and a wire opens inspection. A small movement threshold distinguishes clicks from drags; double-click rotates symbols only in Select. Pan and middle-mouse dragging always move the camera regardless of the underlying object, preserving the selection. Input fields and open dialogs retain their ordinary keyboard behavior.
+
+Bulk selection is an array of object identities, with an inspector only for a single selected object. `editor/selection.ts` selects fully enclosed symbols, standalone junctions, and routed wires in world coordinates; attached terminals and implicit leads highlight with their parent element. Shift extends a box selection or toggles an object, and Ctrl/⌘+A selects all outside text fields. Group movement applies a shared snapped delta to symbols and standalone nodes, preserving relative positions and electrical connectivity. Batch movement and deletion each commit one source revision so undo restores the complete group.
 
 Pointer capture keeps drags reliable outside a target's SVG bounds. Drop hit testing projects onto actual routed wire segments and gives existing node hits priority, so a near-endpoint drop reuses the node instead of inserting a coincident junction. A release on empty canvas latches the wire preview; a later empty-space click commits a junction and segment and continues from the new node. Escape, pointer cancellation, and tool changes discard only the unfinished preview.
 
