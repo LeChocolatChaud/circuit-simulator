@@ -36,6 +36,11 @@ import { Inspector, type Probe } from './inspection/Inspector';
 import { Waveform } from './inspection/Waveform';
 import { parse, quantity } from './language/parser';
 import { declaration, deleteSelection, setProperty } from './language/edit';
+import {
+  connectNodes,
+  continueWire,
+  connectToWire,
+} from './language/connections';
 import { examples } from './model/examples';
 import {
   componentInfo,
@@ -137,9 +142,10 @@ export default function App() {
             .map((d) => d.message)
             .join(' '),
         );
-        return;
+        return false;
       }
       change(next);
+      return true;
     },
     [change],
   );
@@ -284,9 +290,26 @@ export default function App() {
     setSelection({ kind: 'node', id });
   };
   const addWire = (from: string, to: string) => {
-    const id = unique('W');
-    commit(`${source.trimEnd()}\nwire ${id} ${from} ${to}\n`);
-    setSelection({ kind: 'wire', id });
+    const edit = connectNodes(doc, from, to);
+    if (!commit(edit.source)) return false;
+    setSelection({
+      kind: edit.wireId.includes('.') ? 'lead' : 'wire',
+      id: edit.wireId,
+    });
+    return true;
+  };
+  const addWirePoint = (from: string, point: Point): string | null => {
+    const edit = continueWire(doc, from, point);
+    if (!commit(edit.source)) return null;
+    setSelection(null);
+    return edit.nodeId;
+  };
+  const joinWire = (from: string, wireId: string, point: Point): boolean => {
+    const edit = connectToWire(doc, from, wireId, point);
+    if (!commit(edit.source)) return false;
+    setSelection({ kind: 'node', id: edit.nodeId });
+    setProbe({ quantity: 'voltage', target: edit.nodeId });
+    return true;
   };
   const addComponent = (kind: ComponentKind) => {
     const info = componentInfo[kind];
@@ -692,6 +715,20 @@ export default function App() {
                 onMove={move}
                 onNode={addNode}
                 onWire={addWire}
+                onWirePoint={addWirePoint}
+                onJoinWire={joinWire}
+                onRotate={(id) => {
+                  const c = doc.components.find((c) => c.id === id);
+                  if (c)
+                    commit(
+                      setProperty(
+                        source,
+                        c.line,
+                        'rotate',
+                        String((c.rotation + 90) % 360),
+                      ),
+                    );
+                }}
                 onArrange={layout}
                 sample={sample}
                 stale={stale}
@@ -1012,13 +1049,19 @@ export default function App() {
           </p>
           <h3>Build & inspect</h3>
           <p>
-            Add components from the library. Drag symbols or standalone
-            junctions; P/N nodes stay permanently attached to the element's
-            ends. Use
-            <strong> Connect nodes</strong> to connect endpoints. Crossings only
-            connect at explicit junctions. Click or right-click an object to
-            inspect it. Rotate is at the top; long popup contents scroll. Use
-            <strong> Expand editor</strong> for more canvas space.
+            Add components from the library. With <strong>Select</strong>, drag
+            elements to move them, double-click to rotate, and drag empty space
+            to pan. P/N nodes stay permanently attached to each element. Drag
+            from a node to another node to connect them, or to a wire to insert
+            a connected junction. Release in empty space to keep drawing; each
+            empty-space click adds an intermediate junction and continues the
+            wire. Crossings only connect at explicit junctions.
+          </p>
+          <p>
+            Click or right-click an object to inspect it. Right-click empty
+            space to add a standalone junction. <strong>Pan</strong> drags the
+            view from anywhere. Rotate is also at the top; long popup contents
+            scroll. Use <strong>Expand editor</strong> for more canvas space.
           </p>
           <h3>Circuit description language</h3>
           <pre>{`circuit "My circuit"\nvoltage_source V1 dc=5V\nresistor R1 resistance=1kOhm\ncapacitor C1 capacitance=10uF\nwire W1 V1.P R1.P\nwire W2 R1.N C1.P\nwire W3 C1.N V1.N\nreference V1.N\nlabel voltage(C1.P) "Vout"\nanalysis transient stop=50ms step=100us`}</pre>
@@ -1050,6 +1093,8 @@ export default function App() {
           </p>
           <h3>Keyboard</h3>
           <div className="shortcut-grid">
+            <span>Select / Pan</span>
+            <kbd>1 / 2</kbd>
             <span>Run analysis</span>
             <kbd>Ctrl / ⌘ + Enter</kbd>
             <span>Export project</span>
@@ -1058,7 +1103,7 @@ export default function App() {
             <kbd>Ctrl / ⌘ + Z / Shift + Z</kbd>
             <span>Delete selection</span>
             <kbd>Delete</kbd>
-            <span>Close popup</span>
+            <span>Cancel drawing / close popup</span>
             <kbd>Esc</kbd>
           </div>
         </div>

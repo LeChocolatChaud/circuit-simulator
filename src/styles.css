@@ -533,9 +533,52 @@ h1 {
 .tool-pan {
   cursor: grab;
 }
-.tool-wire,
-.tool-node {
+.drawing-wire {
   cursor: crosshair;
+}
+.canvas-toolbar [aria-label='Schematic tools'] button {
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+  width: 43px;
+}
+.canvas-toolbar .tool-group {
+  flex-shrink: 0;
+}
+.canvas-toolbar [aria-label='Schematic tools'] kbd {
+  font: 9px var(--mono);
+  opacity: 0.6;
+}
+.canvas-caption {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-select .circuit-node,
+.drawing-wire .circuit-wire {
+  cursor: crosshair;
+}
+.tool-pan .component,
+.tool-pan .circuit-node,
+.tool-pan .circuit-wire {
+  cursor: grab;
+}
+.tool-select {
+  cursor: grab;
+}
+.connection-preview {
+  pointer-events: none;
+}
+.wire-preview-end {
+  fill: var(--theme-surface, #fafcf6);
+  stroke: var(--theme-accent, #27896f);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.circuit-wire.connection-target .wire-visible {
+  stroke: var(--theme-accent, #27896f);
+  stroke-width: 3;
 }
 .schematic {
   display: block;

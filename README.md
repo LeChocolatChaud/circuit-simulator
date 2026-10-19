@@ -29,8 +29,10 @@ For browser tests, first run `npx playwright install chromium`. To use an existi
 ## Use the workbench
 
 - Add components from the library. Each element has permanent **`Element.P` and `Element.N` nodes attached to its ends**. They follow the element when it moves or rotates; they cannot be moved independently. Op amps also have attached `INP` and `INN` inputs.
-- Use **Connect nodes**, then click two junctions or terminals. Crossings connect only through explicit junctions. Use **Add node** to place another junction.
-- Drag components or standalone junctions. Rotate selected elements from the top toolbar or popup header. **Arrange** changes both element positions and rotations, and wires route around symbol bodies. Scroll to zoom, or use **Pan canvas** and **Fit circuit**.
+- **Select (`1`)** combines editing gestures: drag empty canvas to pan, drag a symbol to move it, and double-click a symbol to rotate it. Drag from a node to another node to connect them; a plain node click still opens its measurements.
+- Release a wire over empty canvas to keep drawing. Each subsequent click on empty space creates a connected intermediate junction and starts the next segment from it. Click a node to finish, or press **Escape** to cancel the unfinished segment; completed segments remain.
+- Drag or draw from a node onto an existing wire to insert a junction on that wire and connect the new branch. Both halves of the original wire remain connected. Crossings alone remain unconnected. Right-click empty canvas and choose **Add node here** for an independent junction.
+- **Pan (`2`)** pans from anywhere, including over symbols and nodes, without editing them. Shortcuts are ignored while typing in form fields. Top rotation controls, scroll-to-zoom, **Fit circuit**, and **Arrange** remain available; Arrange can change positions and rotations.
 - Right-click an element, terminal, or wire to open the website's inspector. Right-click empty canvas for canvas actions. Long popups scroll internally; their header and actions remain accessible. Enlarge the visual editor with **Expand editor**, or resize its bottom edge on desktop.
 - Use the moon/sun button to choose dark or light mode. The app remembers this preference on your device and initially follows your system theme.
 - Click a component for terminal voltage, signed current, and signed power. Click a node for voltage or to set the reference. Click a wire or terminal lead for branch current.

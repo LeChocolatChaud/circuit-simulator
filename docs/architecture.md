@@ -12,6 +12,14 @@ New declarations can omit the terminal tuple: `resistor R1 resistance=1kOhm` cre
 
 The visual canvas has a resizable height and an expanded mode. Inspector headers/actions are separate from the scrolling content; their maximum height is bounded by the actual remaining canvas height. Touch scrolling is enabled on popup contents, and wheel events there do not zoom the canvas. Right-click dispatch uses the SVG object's selection identity and opens the same inspector. Theme colors use shared dark-mode tokens with existing light-color fallbacks; the choice is stored separately from project contents.
 
+## Unified pointer interaction
+
+The toolbar has Select (`1`) and Pan (`2`). Select dispatches a pointer gesture from its starting target: blank canvas pans, a symbol moves, a node starts wiring, and a wire opens inspection. A small movement threshold distinguishes node clicks from wiring drags; double-click rotates symbols only in Select. Pan always moves the camera regardless of the underlying object. Input fields and open dialogs retain their ordinary digit-key behavior.
+
+Pointer capture keeps drags reliable outside a target's SVG bounds. Drop hit testing projects onto actual routed wire segments and gives existing node hits priority, so a near-endpoint drop reuses the node instead of inserting a coincident junction. A release on empty canvas latches the wire preview; a later empty-space click commits a junction and segment and continues from the new node. Escape, pointer cancellation, and tool changes discard only the unfinished preview.
+
+`language/connections.ts` builds each waypoint or wire tap as one validated source edit. An explicit wire tap retains the original wire ID/label on its first half, adds the second half, and adds the incoming branch. Tapping an implicit lead instead rebinds its component through the new junction and preserves the original junction connection with an explicit segment. Undo therefore never leaves half a split or an orphan waypoint. Automatic fitting does not respond to junction insertion, so the camera stays fixed while drawing.
+
 ## Solver
 
 Explicit wires are unioned into electrical nets. The selected reference net's potential is omitted from the unknown vector. Other unknowns are net voltages and one output-branch current per component. Equations consist of Kirchhoff current balances and device constitutive relations; the additional current unknowns make dependent current controls and ideal op-amp outputs straightforward.

@@ -12,8 +12,6 @@ import {
   Plus,
   Maximize2,
   MousePointer2,
-  Cable,
-  CirclePlus,
   Hand,
 } from 'lucide-react';
 import {
@@ -27,6 +25,7 @@ import {
 } from '../model/types';
 import { Symbol } from './Symbol';
 import { format } from '../model/format';
+import { connectionTarget, type ConnectionTarget } from './hitTesting';
 import {
   attachedNodes,
   pathCenter,
@@ -35,14 +34,49 @@ import {
   wireRoutes,
 } from './routing';
 
-export type Tool = 'select' | 'wire' | 'node' | 'pan';
+export type Tool = 'select' | 'pan';
+type Gesture =
+  | {
+      kind: 'pan';
+      pointerId: number;
+      start: Point;
+      origin: Point;
+      moved: boolean;
+    }
+  | {
+      kind: 'move';
+      pointerId: number;
+      start: Point;
+      worldStart: Point;
+      origin: Point;
+      selection: NonNullable<Selection>;
+      moved: boolean;
+    }
+  | {
+      kind: 'node';
+      pointerId: number;
+      start: Point;
+      node: string;
+      moved: boolean;
+    }
+  | { kind: 'drawing'; pointerId: number; start: Point; moved: boolean }
+  | {
+      kind: 'inspect';
+      pointerId: number;
+      start: Point;
+      selection: NonNullable<Selection>;
+      moved: boolean;
+    };
 interface Props {
   doc: CircuitDocument;
   selection: Selection;
   onSelect: (selection: Selection) => void;
   onMove: (selection: NonNullable<Selection>, position: Point) => void;
   onNode: (position: Point) => void;
-  onWire: (from: string, to: string) => void;
+  onWire: (from: string, to: string) => boolean;
+  onWirePoint: (from: string, position: Point) => string | null;
+  onJoinWire: (from: string, wireId: string, position: Point) => boolean;
+  onRotate: (id: string) => void;
   sample?: Sample;
   stale: boolean;
   disabled: boolean;
@@ -58,6 +92,9 @@ export function Canvas({
   onMove,
   onNode,
   onWire,
+  onWirePoint,
+  onJoinWire,
+  onRotate,
   sample,
   stale,
   disabled,
@@ -69,6 +106,13 @@ export function Canvas({
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
   const [tool, setTool] = useState<Tool>('select');
   const [wireStart, setWireStart] = useState<string | null>(null);
+  const drawing = useRef<string | null>(null);
+  const gesture = useRef<Gesture | null>(null);
+  const [pressed, setPressed] = useState(false);
+  const setDrawing = useCallback((id: string | null) => {
+    drawing.current = id;
+    setWireStart(id);
+  }, []);
   const [drag, setDrag] = useState<{
     selection: NonNullable<Selection>;
     origin: Point;
@@ -81,17 +125,53 @@ export function Canvas({
   const [cursor, setCursor] = useState<Point | null>(null);
   const [contextPoint, setContextPoint] = useState<Point | null>(null);
   const [contextMenu, setContextMenu] = useState(false);
+  const cancelInteraction = useCallback(() => {
+    const current = gesture.current;
+    gesture.current = null;
+    if (current && container.current?.hasPointerCapture(current.pointerId))
+      container.current.releasePointerCapture(current.pointerId);
+    setDrawing(null);
+    setDrag(null);
+    setPan(null);
+    setPressed(false);
+  }, [setDrawing]);
   useEffect(() => {
-    const dismiss = (event: KeyboardEvent) => {
+    const keyboard = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        cancelInteraction();
         setContextMenu(false);
         setContextPoint(null);
-        setWireStart(null);
+        return;
+      }
+      const target = event.target;
+      if (
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.shiftKey ||
+        document.querySelector('dialog[open]') ||
+        (target instanceof Element &&
+          target.closest('input, textarea, select, [contenteditable="true"]'))
+      )
+        return;
+      if (event.key === '1' || event.key === '2') {
+        event.preventDefault();
+        cancelInteraction();
+        setTool(event.key === '1' ? 'select' : 'pan');
+        setContextMenu(false);
       }
     };
-    window.addEventListener('keydown', dismiss);
-    return () => window.removeEventListener('keydown', dismiss);
-  }, []);
+    window.addEventListener('keydown', keyboard);
+    window.addEventListener('blur', cancelInteraction);
+    return () => {
+      window.removeEventListener('keydown', keyboard);
+      window.removeEventListener('blur', cancelInteraction);
+    };
+  }, [cancelInteraction]);
+  useEffect(() => {
+    if (disabled || (wireStart && !doc.nodes.some((n) => n.id === wireStart)))
+      cancelInteraction();
+  }, [disabled, doc.nodes, wireStart, cancelInteraction]);
   const name = useRef('');
   const lastSize = useRef({ width: 0, height: 0 });
   useEffect(() => {
@@ -127,7 +207,7 @@ export function Canvas({
     });
   }, [doc.nodes, doc.components, size]);
   useEffect(() => {
-    const structure = `${doc.name}:${doc.nodes.length}:${doc.components.length}`;
+    const structure = `${doc.name}:${doc.components.length}`;
     if (
       size.width > 100 &&
       (structure !== name.current ||
@@ -175,29 +255,177 @@ export function Canvas({
   const getNode = (id: string) => nodes.find((n) => n.id === id)!.position;
   const selected = (kind: string, id: string) =>
     selection?.kind === kind && selection.id === id;
-  const connect = (id: string) => {
-    if (disabled) return;
-    if (wireStart && wireStart !== id) {
-      onWire(wireStart, id);
-      setWireStart(null);
-    } else setWireStart(id);
+  const targetAt = (event: {
+    clientX: number;
+    clientY: number;
+  }):
+    | ConnectionTarget
+    | { kind: 'component'; id: string; point: Point }
+    | null => {
+    const point = world(screen(event));
+    const hit = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest('[data-kind][data-id]');
+    const kind = hit?.getAttribute('data-kind');
+    const id = hit?.getAttribute('data-id');
+    const target = connectionTarget(
+      point,
+      nodes,
+      doc.wires,
+      routes,
+      view.scale,
+      kind === 'wire' || kind === 'lead' ? (id ?? undefined) : undefined,
+    );
+    if (target?.kind === 'node') return target;
+    if (kind === 'node' && id) {
+      const n = nodes.find((n) => n.id === id);
+      if (n) return { kind: 'node', id, point: n.position };
+    }
+    if (kind === 'component' && id) return { kind: 'component', id, point };
+    return target;
   };
-  const startDrag = (
-    event: React.PointerEvent,
-    item: NonNullable<Selection>,
-    origin: Point,
-  ) => {
-    if (event.button !== 0 || tool === 'pan') return;
-    event.stopPropagation();
-    select(item);
-    if (disabled || tool !== 'select') return;
+  const beginPointer = (event: React.PointerEvent<SVGSVGElement>) => {
+    if (event.button !== 0 && event.button !== 1) return;
+    setContextMenu(false);
+    setContextPoint(null);
+    const point = screen(event);
+    const target = targetAt(event);
+    const base = { pointerId: event.pointerId, start: point, moved: false };
+    if (event.button === 1 || tool === 'pan') {
+      event.preventDefault();
+      onSelect(null);
+      gesture.current = {
+        ...base,
+        kind: 'pan',
+        origin: { x: view.x, y: view.y },
+      };
+      setPan({ start: point, x: view.x, y: view.y });
+    } else if (drawing.current && target?.kind !== 'component') {
+      gesture.current = { ...base, kind: 'drawing' };
+      onSelect(null);
+    } else if (target?.kind === 'node') {
+      if (disabled) {
+        select({ kind: 'node', id: target.id });
+        return;
+      }
+      setDrawing(target.id);
+      onSelect(null);
+      gesture.current = { ...base, kind: 'node', node: target.id };
+      setCursor(target.point);
+    } else if (target?.kind === 'component') {
+      setDrawing(null);
+      select({ kind: 'component', id: target.id });
+      if (disabled) return;
+      const c = components.find((c) => c.id === target.id)!;
+      const item = { kind: 'component' as const, id: c.id };
+      gesture.current = {
+        ...base,
+        kind: 'move',
+        selection: item,
+        origin: c.position,
+        worldStart: world(point),
+      };
+      setDrag({
+        selection: item,
+        origin: c.position,
+        start: world(point),
+        current: c.position,
+      });
+    } else if (target?.kind === 'wire') {
+      const w = doc.wires.find((w) => w.id === target.id)!;
+      const item = {
+        kind: w.implicit ? ('lead' as const) : ('wire' as const),
+        id: w.id,
+      };
+      gesture.current = { ...base, kind: 'inspect', selection: item };
+      select(item);
+    } else {
+      event.preventDefault();
+      select(null);
+      gesture.current = {
+        ...base,
+        kind: 'pan',
+        origin: { x: view.x, y: view.y },
+      };
+      setPan({ start: point, x: view.x, y: view.y });
+    }
+    setPressed(true);
     container.current?.setPointerCapture(event.pointerId);
-    setDrag({
-      selection: item,
-      origin,
-      start: world(screen(event)),
-      current: origin,
-    });
+  };
+  const movedPosition = (
+    g: Extract<Gesture, { kind: 'move' }>,
+    point: Point,
+  ): Point => {
+    const pos = world(point);
+    return {
+      x: Math.round((g.origin.x + pos.x - g.worldStart.x) / 10) * 10,
+      y: Math.round((g.origin.y + pos.y - g.worldStart.y) / 10) * 10,
+    };
+  };
+  const finishConnection = (
+    event: React.PointerEvent,
+    addWaypoint: boolean,
+  ) => {
+    const from = drawing.current;
+    if (!from || disabled) {
+      setDrawing(null);
+      return;
+    }
+    const point = screen(event);
+    const target = targetAt(event);
+    if (target?.kind === 'node') {
+      if (target.id === from) {
+        setDrawing(null);
+        select({ kind: 'node', id: from });
+      } else if (onWire(from, target.id)) setDrawing(null);
+    } else if (target?.kind === 'wire') {
+      if (onJoinWire(from, target.id, target.point)) setDrawing(null);
+    } else if (
+      addWaypoint &&
+      !target &&
+      point.x >= 0 &&
+      point.x <= size.width &&
+      point.y >= 0 &&
+      point.y <= size.height
+    ) {
+      const pos = world(point);
+      const next = onWirePoint(from, {
+        x: Math.round(pos.x / 10) * 10,
+        y: Math.round(pos.y / 10) * 10,
+      });
+      if (next) setDrawing(next);
+    }
+    setCursor(world(point));
+  };
+  const endPointer = (event: React.PointerEvent) => {
+    const g = gesture.current;
+    if (!g || g.pointerId !== event.pointerId) return;
+    const point = screen(event);
+    const moved =
+      g.moved || Math.hypot(point.x - g.start.x, point.y - g.start.y) >= 4;
+    gesture.current = null;
+    setPressed(false);
+    setDrag(null);
+    setPan(null);
+    if (g.kind === 'move') {
+      const position = movedPosition(g, point);
+      if (moved && (position.x !== g.origin.x || position.y !== g.origin.y))
+        onMove(g.selection, position);
+    } else if (g.kind === 'node') {
+      if (moved) finishConnection(event, false);
+      else {
+        setDrawing(null);
+        select({ kind: 'node', id: g.node });
+      }
+    } else if (g.kind === 'drawing') finishConnection(event, true);
+    else if (g.kind === 'pan')
+      setView((v) => ({
+        ...v,
+        x: g.origin.x + point.x - g.start.x,
+        y: g.origin.y + point.y - g.start.y,
+      }));
+    if (container.current?.hasPointerCapture(event.pointerId))
+      container.current.releasePointerCapture(event.pointerId);
   };
   const zoom = (
     factor: number,
@@ -211,6 +439,11 @@ export function Canvas({
         y: center.y - ((center.y - v.y) * scale) / v.scale,
       };
     });
+  const previewTarget =
+    wireStart && cursor
+      ? connectionTarget(cursor, nodes, doc.wires, routes, view.scale)
+      : null;
+  const previewEnd = previewTarget?.point ?? cursor;
   let anchor: Point | undefined;
   if (selection?.kind === 'node')
     anchor = nodes.find((n) => n.id === selection.id)?.position;
@@ -255,35 +488,37 @@ export function Canvas({
         <div className="tool-group" aria-label="Schematic tools">
           {(
             [
-              { key: 'select', title: 'Select and move', icon: MousePointer2 },
-              { key: 'wire', title: 'Connect nodes', icon: Cable },
-              { key: 'node', title: 'Add node', icon: CirclePlus },
-              { key: 'pan', title: 'Pan canvas', icon: Hand },
+              {
+                key: 'select',
+                title: 'Select',
+                keycap: '1',
+                icon: MousePointer2,
+              },
+              { key: 'pan', title: 'Pan', keycap: '2', icon: Hand },
             ] as const
           ).map((t) => (
             <button
               key={t.key}
-              title={t.title}
+              title={`${t.title} (${t.keycap})`}
               aria-label={t.title}
               aria-pressed={tool === t.key}
               className={tool === t.key ? 'active' : ''}
               onClick={() => {
+                cancelInteraction();
                 setTool(t.key);
-                setWireStart(null);
               }}
             >
               <t.icon size={17} />
+              <kbd>{t.keycap}</kbd>
             </button>
           ))}
         </div>
         <span className="canvas-caption">
-          {tool === 'wire'
-            ? wireStart
-              ? `Connect ${wireStart} to another node`
-              : 'Select two nodes or terminals to connect'
-            : tool === 'node'
-              ? 'Click the canvas to place a junction'
-              : 'SCHEMATIC'}{' '}
+          {wireStart
+            ? `From ${wireStart} · click a node or wire to finish, empty space for a junction`
+            : tool === 'pan'
+              ? 'PAN · drag anywhere'
+              : 'SELECT · drag nodes to wire · drag empty canvas to pan'}
         </span>
         <div className="tool-group zoom-controls">
           <button
@@ -307,13 +542,30 @@ export function Canvas({
         </div>
       </div>
       <div
-        className={`canvas tool-${tool}`}
+        className={`canvas tool-${tool} ${wireStart ? 'drawing-wire' : ''}`}
         ref={container}
+        onDoubleClick={(event) => {
+          if (
+            tool !== 'select' ||
+            disabled ||
+            (event.target as Element).closest(
+              '.inspector-anchor, .canvas-context-menu',
+            )
+          )
+            return;
+          // Pointer capture sends click events to the canvas, so resolve the
+          // component from the cursor rather than the event's captured target.
+          const target = targetAt(event);
+          if (target?.kind === 'component') {
+            cancelInteraction();
+            select({ kind: 'component', id: target.id });
+            onRotate(target.id);
+          }
+        }}
         onContextMenu={(event) => {
           if ((event.target as Element).closest('.inspector-anchor')) return;
           event.preventDefault();
-          setDrag(null);
-          setPan(null);
+          cancelInteraction();
           const target = (event.target as Element).closest(
             '[data-kind][data-id]',
           );
@@ -343,38 +595,28 @@ export function Canvas({
         onPointerMove={(event) => {
           const point = screen(event);
           setCursor(world(point));
-          if (drag) {
-            const pos = world(point);
+          const g = gesture.current;
+          if (!g || g.pointerId !== event.pointerId) return;
+          if (Math.hypot(point.x - g.start.x, point.y - g.start.y) >= 4)
+            g.moved = true;
+          if (g.kind === 'move' && g.moved)
             setDrag({
-              ...drag,
-              current: {
-                x: Math.round((drag.origin.x + pos.x - drag.start.x) / 10) * 10,
-                y: Math.round((drag.origin.y + pos.y - drag.start.y) / 10) * 10,
-              },
+              selection: g.selection,
+              origin: g.origin,
+              start: g.worldStart,
+              current: movedPosition(g, point),
             });
-          }
-          if (pan)
+          if (g.kind === 'pan')
             setView((v) => ({
               ...v,
-              x: pan.x + point.x - pan.start.x,
-              y: pan.y + point.y - pan.start.y,
+              x: g.origin.x + point.x - g.start.x,
+              y: g.origin.y + point.y - g.start.y,
             }));
         }}
-        onPointerUp={(event) => {
-          if (
-            drag &&
-            (drag.current.x !== drag.origin.x ||
-              drag.current.y !== drag.origin.y)
-          )
-            onMove(drag.selection, drag.current);
-          setDrag(null);
-          setPan(null);
-          if (container.current?.hasPointerCapture(event.pointerId))
-            container.current.releasePointerCapture(event.pointerId);
-        }}
-        onPointerCancel={() => {
-          setDrag(null);
-          setPan(null);
+        onPointerUp={endPointer}
+        onPointerCancel={cancelInteraction}
+        onLostPointerCapture={() => {
+          if (gesture.current) cancelInteraction();
         }}
       >
         <svg
@@ -383,24 +625,7 @@ export function Canvas({
           aria-label={`${doc.name} schematic`}
           width={size.width}
           height={size.height}
-          onPointerDown={(event) => {
-            if (event.button === 2) return;
-            if (event.button === 1 || tool === 'pan') {
-              event.preventDefault();
-              const start = screen(event);
-              setPan({ start, x: view.x, y: view.y });
-              container.current?.setPointerCapture(event.pointerId);
-            } else if (tool === 'node' && !disabled) {
-              const p = world(screen(event));
-              onNode({
-                x: Math.round(p.x / 10) * 10,
-                y: Math.round(p.y / 10) * 10,
-              });
-            } else {
-              select(null);
-              setWireStart(null);
-            }
-          }}
+          onPointerDown={beginPointer}
         >
           <defs>
             <pattern
@@ -438,6 +663,8 @@ export function Canvas({
               const { point: mid, horizontal, direction } = pathCenter(path);
               const kind = w.implicit ? 'lead' : 'wire';
               const isSelected = selected(kind, w.id);
+              const isTarget =
+                previewTarget?.kind === 'wire' && previewTarget.id === w.id;
               const current = sample?.wireCurrents[w.id];
               const sign = direction * ((current ?? 0) < 0 ? -1 : 1);
               return (
@@ -445,19 +672,12 @@ export function Canvas({
                   key={w.id}
                   data-kind={kind}
                   data-id={w.id}
-                  className={`circuit-wire ${isSelected ? 'selected' : ''}`}
+                  className={`circuit-wire ${isSelected ? 'selected' : ''} ${isTarget ? 'connection-target' : ''}`}
                   role="button"
                   aria-label={
                     w.implicit ? `Inspect branch ${w.id}` : `Wire ${w.id}`
                   }
                   tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    select({ kind, id: w.id });
-                  }}
-                  onPointerDown={(e) => {
-                    if (tool !== 'pan') e.stopPropagation();
-                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') select({ kind, id: w.id });
                   }}
@@ -505,9 +725,6 @@ export function Canvas({
                   if (e.key === 'Enter')
                     select({ kind: 'component', id: c.id });
                 }}
-                onPointerDown={(event) =>
-                  startDrag(event, { kind: 'component', id: c.id }, c.position)
-                }
               >
                 <rect
                   className="component-hit"
@@ -568,24 +785,13 @@ export function Canvas({
                 key={n.id}
                 data-kind="node"
                 data-id={n.id}
-                className={`circuit-node ${n.terminal ? 'terminal-node' : ''} ${selected('node', n.id) || wireStart === n.id ? 'selected' : ''}`}
+                className={`circuit-node ${n.terminal ? 'terminal-node' : ''} ${selected('node', n.id) || wireStart === n.id || (previewTarget?.kind === 'node' && previewTarget.id === n.id) ? 'selected' : ''}`}
                 transform={`translate(${n.position.x} ${n.position.y})`}
                 role="button"
                 aria-label={`Inspect node ${n.id}`}
                 tabIndex={0}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') select({ kind: 'node', id: n.id });
-                }}
-                onPointerDown={(event) => {
-                  if (event.button !== 0 || tool === 'pan') return;
-                  if (tool === 'wire') {
-                    event.stopPropagation();
-                    connect(n.id);
-                  } else if (n.terminal) {
-                    event.stopPropagation();
-                    select({ kind: 'node', id: n.id });
-                  } else
-                    startDrag(event, { kind: 'node', id: n.id }, n.position);
                 }}
               >
                 <circle className="node-hit" r="14" />
@@ -669,12 +875,22 @@ export function Canvas({
                 </g>
               );
             })}
-            {wireStart && cursor && nodes.some((n) => n.id === wireStart) && (
-              <path
-                className="wire-preview"
-                d={route(getNode(wireStart), cursor)}
-              />
-            )}
+            {wireStart &&
+              previewEnd &&
+              nodes.some((n) => n.id === wireStart) && (
+                <g className="connection-preview" aria-label="Wire in progress">
+                  <path
+                    className="wire-preview"
+                    d={route(getNode(wireStart), previewEnd)}
+                  />
+                  <circle
+                    className="wire-preview-end"
+                    cx={previewEnd.x}
+                    cy={previewEnd.y}
+                    r={5 / view.scale}
+                  />
+                </g>
+              )}
           </g>
         </svg>
         {!doc.components.length && (
@@ -686,7 +902,7 @@ export function Canvas({
             </p>
           </div>
         )}
-        {anchor && !drag && !pan && (
+        {anchor && !drag && !pan && !pressed && !wireStart && (
           <div
             className="inspector-anchor"
             style={
@@ -754,7 +970,9 @@ export function Canvas({
             <i className="legend-wire" /> Branch
           </span>
           <span>
-            {tool === 'pan' ? 'Drag to pan' : 'Scroll to zoom · Drag to move'}
+            {tool === 'pan'
+              ? 'Drag anywhere to pan · 1: Select'
+              : 'Drag nodes to connect · Double-click elements to rotate'}
           </span>
         </div>
       </div>

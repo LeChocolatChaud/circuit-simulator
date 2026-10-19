@@ -24,6 +24,8 @@ Attached terminals do not need separate node declarations. `node C1.P label="Out
 
 A wire connects any two terminals or standalone junctions. It merges their electrical potential while retaining the segment for current inspection. W1's positive current direction above is `V1.P → R1.P`. Crossings do not create electrical connections. Open terminals and unused standalone nodes are valid.
 
+In Select (`1`), drag from one node to another to create a wire. Releasing over empty canvas keeps drawing active: each following empty-space click adds a `node n... at=(x,y)` declaration and an incoming wire, then continues from that junction. Dropping or clicking onto a wire splits that wire at the projected hit point and attaches the incoming branch. The original ID and label stay on the first half; the continuation and new branch receive fresh wire IDs. Each intermediate junction or split is one undoable edit. Pan (`2`) moves the view from any target; double-clicking a symbol in Select rotates it.
+
 `reference` selects the zero-voltage node, including an attached terminal such as `V1.N`. If omitted, `gnd` or the first node is used with a warning. An island without a defined reference can have indeterminate absolute voltages even when some element voltage differences or currents are known.
 
 ## Quantities and units

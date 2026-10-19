@@ -1,4 +1,32 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import { parse } from '../../src/language/parser';
+
+async function nodePoint(page: Page, id: string) {
+  const box = await page
+    .getByRole('button', { name: `Inspect node ${id}`, exact: true })
+    .locator('.node-dot')
+    .boundingBox();
+  if (!box) throw new Error(`Node ${id} is not visible`);
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+async function worldPoint(page: Page, point: { x: number; y: number }) {
+  return page.locator('.schematic > g').evaluate((element, point) => {
+    const transformed = new DOMPoint(point.x, point.y).matrixTransform(
+      (element as SVGGraphicsElement).getScreenCTM()!,
+    );
+    return { x: transformed.x, y: transformed.y };
+  }, point);
+}
+async function dragBetween(
+  page: Page,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+) {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 10 });
+  await page.mouse.up();
+}
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
@@ -160,15 +188,11 @@ test('adds and connects components and arranges the schematic', async ({
     page.getByRole('button', { name: 'Inspect R3', exact: true }),
   ).toBeVisible();
   await page.getByRole('button', { name: 'Close inspector' }).click();
-  await page
-    .getByRole('button', { name: 'Connect nodes', exact: true })
-    .click();
-  await page
-    .getByRole('button', { name: 'Inspect node R3.P', exact: true })
-    .click();
-  await page
-    .getByRole('button', { name: 'Inspect node V1.P', exact: true })
-    .click();
+  await dragBetween(
+    page,
+    await nodePoint(page, 'R3.P'),
+    await nodePoint(page, 'V1.P'),
+  );
   await expect(
     page.getByRole('textbox', { name: 'Circuit description' }),
   ).toHaveValue(/wire W4 R3.P V1.P/);
@@ -423,4 +447,184 @@ test('new elements have permanent endpoint nodes and context inspection after ro
   await expect(
     page.getByRole('complementary', { name: 'Measurement inspector' }),
   ).toContainText('R3.P');
+});
+
+test('has only Select/Pan tools, uses 1/2 shortcuts, and pans empty canvas without editing', async ({
+  page,
+}) => {
+  const tools = page.locator('[aria-label="Schematic tools"]');
+  await expect(tools.getByRole('button')).toHaveCount(2);
+  await expect(
+    tools.getByRole('button', { name: 'Select', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  const editor = page.getByRole('textbox', { name: 'Circuit description' });
+  const source = await editor.inputValue();
+  const scene = page.locator('.schematic > g');
+  const before = await scene.getAttribute('transform');
+  const svg = await page.locator('.schematic').boundingBox();
+  await dragBetween(
+    page,
+    { x: svg!.x + 20, y: svg!.y + 20 },
+    { x: svg!.x + 100, y: svg!.y + 80 },
+  );
+  await expect(scene).not.toHaveAttribute('transform', before!);
+  await expect(editor).toHaveValue(source);
+  await page.keyboard.press('2');
+  await expect(
+    tools.getByRole('button', { name: 'Pan', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  const body = await page
+    .getByRole('button', { name: 'Inspect R1', exact: true })
+    .locator('.component-hit')
+    .boundingBox();
+  const panned = await scene.getAttribute('transform');
+  await dragBetween(
+    page,
+    { x: body!.x + body!.width / 2, y: body!.y + body!.height / 2 },
+    { x: body!.x + body!.width / 2 + 40, y: body!.y + body!.height / 2 + 20 },
+  );
+  await expect(scene).not.toHaveAttribute('transform', panned!);
+  await expect(editor).toHaveValue(source);
+  await page.keyboard.press('1');
+  await expect(
+    tools.getByRole('button', { name: 'Select', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await editor.fill(`${source}\n# Typing shortcut digits: `);
+  await editor.press('Control+End');
+  await editor.press('2');
+  await expect(
+    tools.getByRole('button', { name: 'Select', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('chains intermediate junctions while drawing and undoes each connected waypoint atomically', async ({
+  page,
+}) => {
+  const editor = page.getByRole('textbox', { name: 'Circuit description' });
+  const source =
+    'circuit "Wire gestures"\nresistor R1 resistance=1kOhm at=(200,200)\nresistor R2 resistance=1kOhm at=(650,200)\nreference R1.N\n';
+  await editor.fill(source);
+  await editor.blur();
+  const transform = await page
+    .locator('.schematic > g')
+    .getAttribute('transform');
+  await dragBetween(
+    page,
+    await nodePoint(page, 'R1.N'),
+    await worldPoint(page, { x: 320, y: 300 }),
+  );
+  await expect(page.getByLabel('Wire in progress')).toBeVisible();
+  await expect(editor).toHaveValue(source);
+  for (const point of [
+    { x: 350, y: 330 },
+    { x: 500, y: 330 },
+  ]) {
+    const screen = await worldPoint(page, point);
+    await page.mouse.click(screen.x, screen.y);
+  }
+  await expect(page.locator('.schematic > g')).toHaveAttribute(
+    'transform',
+    transform!,
+  );
+  const end = await nodePoint(page, 'R2.P');
+  await page.mouse.click(end.x, end.y);
+  await expect(page.getByLabel('Wire in progress')).toHaveCount(0);
+  const doc = parse(await editor.inputValue()).document!;
+  expect(doc.nodes.filter((n) => !n.terminal).map((n) => n.position)).toEqual([
+    { x: 350, y: 330 },
+    { x: 500, y: 330 },
+  ]);
+  expect(doc.wires.map((w) => [w.from, w.to])).toEqual([
+    ['R1.N', 'n1'],
+    ['n1', 'n2'],
+    ['n2', 'R2.P'],
+  ]);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  const undone = parse(await editor.inputValue()).document!;
+  expect(undone.nodes.some((n) => n.id === 'n2')).toBe(false);
+  expect(undone.wires.map((w) => [w.from, w.to])).toEqual([['R1.N', 'n1']]);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(editor).toHaveValue(source);
+});
+
+test('drops a node connection onto a wire, splits it at the hit point, and preserves both halves', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: 'Add Resistor', exact: true }).click();
+  await page.getByRole('button', { name: 'Close inspector' }).click();
+  const editor = page.getByRole('textbox', { name: 'Circuit description' });
+  const before = await editor.inputValue();
+  const destination = await page
+    .getByRole('button', { name: 'Wire W1', exact: true })
+    .locator('.wire-visible')
+    .evaluate((element) => {
+      const path = element as SVGPathElement;
+      const point = path.getPointAtLength(path.getTotalLength() / 2);
+      const screen = new DOMPoint(point.x, point.y).matrixTransform(
+        path.getScreenCTM()!,
+      );
+      return {
+        screen: { x: screen.x, y: screen.y },
+        world: { x: point.x, y: point.y },
+      };
+    });
+  await dragBetween(page, await nodePoint(page, 'R3.P'), destination.screen);
+  const doc = parse(await editor.inputValue()).document!;
+  const node = doc.nodes.find((n) => !n.terminal)!;
+  expect(node).toBeDefined();
+  expect(
+    Math.hypot(
+      node.position.x - destination.world.x,
+      node.position.y - destination.world.y,
+    ),
+  ).toBeLessThan(1);
+  expect(doc.wires.find((w) => w.id === 'W1')).toMatchObject({
+    from: 'V1.N',
+    to: node.id,
+  });
+  expect(doc.wires.some((w) => w.from === node.id && w.to === 'R2.N')).toBe(
+    true,
+  );
+  expect(doc.wires.some((w) => w.from === 'R3.P' && w.to === node.id)).toBe(
+    true,
+  );
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(editor).toHaveValue(before);
+});
+
+test('double-click rotates only in Select, and Escape or changing tools cancels unfinished wiring', async ({
+  page,
+}) => {
+  const editor = page.getByRole('textbox', { name: 'Circuit description' });
+  const original = await editor.inputValue();
+  await page
+    .getByRole('button', { name: 'Inspect R1', exact: true })
+    .locator('.component-hit')
+    .dblclick();
+  expect(
+    parse(await editor.inputValue()).document!.components.find(
+      (c) => c.id === 'R1',
+    )?.rotation,
+  ).toBe(90);
+  await page.getByRole('button', { name: 'Close inspector' }).click();
+  await page.keyboard.press('2');
+  const rotated = await editor.inputValue();
+  await page
+    .getByRole('button', { name: 'Inspect R1', exact: true })
+    .locator('.component-hit')
+    .dblclick();
+  await expect(editor).toHaveValue(rotated);
+  await page.keyboard.press('1');
+  const point = await worldPoint(page, { x: 300, y: 440 });
+  await dragBetween(page, await nodePoint(page, 'R1.P'), point);
+  await expect(page.getByLabel('Wire in progress')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByLabel('Wire in progress')).toHaveCount(0);
+  await expect(editor).toHaveValue(rotated);
+  await dragBetween(page, await nodePoint(page, 'R1.P'), point);
+  await page.keyboard.press('2');
+  await expect(page.getByLabel('Wire in progress')).toHaveCount(0);
+  await expect(editor).toHaveValue(rotated);
+  expect(rotated).not.toBe(original);
 });
